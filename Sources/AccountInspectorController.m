@@ -1,5 +1,6 @@
 #import "AccountInspectorController.h"
 #import "Account.h"
+#import "AuthorizationLink.h"
 #import "DeskUI.h"
 
 static NSString *const UnknownPlanTitle = @"未获取";
@@ -35,6 +36,7 @@ static NSString *SourceName(NSString *source, id value) {
 @property (nonatomic, strong) NSDatePicker *datePicker;
 @property (nonatomic, strong) NSPopUpButton *extendButton;
 @property (nonatomic, strong) NSTextField *sourceLabel;
+@property (nonatomic, strong) NSTextField *authField;
 @property (nonatomic, strong) NSTextView *notesView;
 @property (nonatomic, strong) NSTextField *recordLabel;
 @end
@@ -156,6 +158,19 @@ static NSString *SourceName(NSString *source, id value) {
     NSButton *syncButton = DeskButton(@"从当前页面读取订阅", @"arrow.triangle.2.circlepath", self.coordinator, @selector(syncSubscription:));
     syncButton.toolTip = @"在 ChatGPT 中打开账号设置里的订阅信息后读取，可识别到期日期";
 
+    // Client authorization
+    self.authField = [NSTextField new];
+    self.authField.delegate = self;
+    self.authField.usesSingleLineMode = YES;
+    self.authField.cell.scrollable = YES;
+    self.authField.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    NSButton *authButton = DeskButton(@"打开授权链接…", @"person.badge.key", self, @selector(openAuthorization:));
+    authButton.toolTip = @"在此账号的会话中打开客户端提供的授权链接（⇧⌘L）";
+    NSTextField *authHint = [NSTextField wrappingLabelWithString:
+        @"用此账号登录 Codex 等支持“使用 ChatGPT 登录”的客户端：粘贴客户端给出的授权链接，授权后客户端会自动完成登录。"];
+    authHint.font = [NSFont systemFontOfSize:11];
+    authHint.textColor = NSColor.secondaryLabelColor;
+
     // Notes
     NSScrollView *notesScroll = [NSTextView scrollableTextView];
     notesScroll.borderType = NSBezelBorder;
@@ -192,6 +207,10 @@ static NSString *SourceName(NSString *source, id value) {
         [self fieldWithCaption:@"级别" control:self.planPicker],
         self.dateToggle, dateRow, self.sourceLabel, syncButton,
         DeskSeparator(),
+        [self sectionTitle:@"客户端授权"],
+        [self fieldWithCaption:@"授权链接" control:self.authField],
+        authButton, authHint,
+        DeskSeparator(),
         [self sectionTitle:@"备注"],
         notesScroll,
         DeskSeparator(),
@@ -211,6 +230,7 @@ static NSString *SourceName(NSString *source, id value) {
     [stack setCustomSpacing:10 afterView:header];
     [stack setCustomSpacing:4 afterView:self.dateToggle];
     [stack setCustomSpacing:6 afterView:self.sourceLabel];
+    [stack setCustomSpacing:6 afterView:authButton];
     [stack setCustomSpacing:6 afterView:sessionButton];
     [stack setCustomSpacing:6 afterView:clearButton];
 
@@ -305,6 +325,9 @@ static NSString *SourceName(NSString *source, id value) {
     if (![self isEditing:self.datePicker]) self.datePicker.dateValue = AccountDateFromDayString(account.expiresAt) ?: now;
     self.sourceLabel.stringValue = [NSString stringWithFormat:@"订阅：%@ · 到期：%@",
         SourceName(account.planSource, account.plan), SourceName(account.expirySource, account.expiresAt)];
+    if (![self isEditing:self.authField]) self.authField.stringValue = account.authURL;
+    BOOL hasDefault = [NSUserDefaults.standardUserDefaults stringForKey:DefaultAuthorizationURLDefaultsKey].length > 0;
+    self.authField.placeholderString = hasDefault ? @"未设置，使用默认授权链接" : @"未设置，打开时粘贴链接";
     if (![self isEditing:self.notesView]) self.notesView.string = account.notes;
 
     NSString *login = account.signedIn ? (account.signedIn.boolValue ? @"已登录" : @"未登录") : @"未检测";
@@ -344,7 +367,30 @@ static NSString *SourceName(NSString *source, id value) {
         if (![before isEqualToString:account.email]) [self save];
     } else if (field == self.groupBox) {
         [self groupChosen:self.groupBox];
+    } else if (field == self.authField) {
+        [self authLinkEdited];
     }
+}
+
+- (void)authLinkEdited {
+    Account *account = [self account];
+    NSString *text = [self.authField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSURL *url = AuthorizationURLFromText(text);
+    if (text.length && !url) {
+        NSBeep();
+        self.authField.stringValue = account.authURL;
+        return;
+    }
+    NSString *value = url.absoluteString ?: @"";
+    self.authField.stringValue = value;
+    if ([value isEqualToString:account.authURL]) return;
+    account.authURL = value;
+    [self save];
+}
+
+- (void)openAuthorization:(id)sender {
+    [self commitPendingEdits];
+    if (self.accountID) [self.coordinator promptAuthorizationForAccountID:self.accountID];
 }
 
 - (void)groupChosen:(id)sender {

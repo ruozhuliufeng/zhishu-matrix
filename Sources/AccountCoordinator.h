@@ -23,12 +23,14 @@ typedef NS_ENUM(NSInteger, DeskMode) {
 - (void)clearLoginDataForAccountIDs:(NSArray<NSString *> *)identifiers;
 - (void)promptGroupForAccountIDs:(NSArray<NSString *> *)identifiers;
 - (void)exportAccountIDs:(nullable NSArray<NSString *> *)identifiers;
+- (void)promptAuthorizationForAccountID:(NSString *)identifier;
 
 - (IBAction)addAccount:(nullable id)sender;
 - (IBAction)importAccounts:(nullable id)sender;
 - (IBAction)exportAccounts:(nullable id)sender;
 - (IBAction)syncSubscription:(nullable id)sender;
 - (IBAction)showCurrentSession:(nullable id)sender;
+- (IBAction)openAuthorizationLink:(nullable id)sender;
 - (IBAction)showBrowser:(nullable id)sender;
 - (IBAction)showManagement:(nullable id)sender;
 @end

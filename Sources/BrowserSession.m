@@ -44,10 +44,14 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
 }
 
 - (instancetype)initWithAccountID:(NSString *)accountID {
+    return [self initWithAccountID:accountID dataStore:nil initialURL:BrowserHomeURL()];
+}
+
+- (instancetype)initWithAccountID:(NSString *)accountID dataStore:(WKWebsiteDataStore *)dataStore initialURL:(NSURL *)initialURL {
     if ((self = [super init])) {
         _accountID = [accountID copy];
         WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
-        configuration.websiteDataStore = [WKWebsiteDataStore dataStoreForIdentifier:[[NSUUID alloc] initWithUUIDString:accountID]];
+        configuration.websiteDataStore = dataStore ?: [WKWebsiteDataStore dataStoreForIdentifier:[[NSUUID alloc] initWithUUIDString:accountID]];
         _webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
         _webView.navigationDelegate = self;
         _webView.UIDelegate = self;
@@ -57,7 +61,7 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
         _downloads = [NSMapTable strongToStrongObjectsMapTable];
         for (NSString *key in ObservedKeys()) [_webView addObserver:self forKeyPath:key options:0 context:ObserverContext];
         _observing = YES;
-        [self goHome];
+        [_webView loadRequest:[NSURLRequest requestWithURL:initialURL]];
     }
     return self;
 }
@@ -102,6 +106,12 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
     [self.webView removeFromSuperview];
     self.stateChanged = nil;
     self.pageReady = nil;
+    self.externalURLOpened = nil;
+}
+
+- (void)openExternally:(NSURL *)url {
+    BOOL opened = [NSWorkspace.sharedWorkspace openURL:url];
+    if (self.externalURLOpened) self.externalURLOpened(self, url, opened);
 }
 
 #pragma mark - Navigation
@@ -112,7 +122,7 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
     NSString *scheme = url.scheme.lowercaseString;
     if (navigationAction.targetFrame.isMainFrame && scheme.length &&
         ![@[@"http", @"https", @"about", @"blob", @"data"] containsObject:scheme]) {
-        [NSWorkspace.sharedWorkspace openURL:url];
+        [self openExternally:url];
         decisionHandler(WKNavigationActionPolicyCancel);
         return;
     }
@@ -151,6 +161,15 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
 
 - (void)navigationFailed:(NSError *)error inWebView:(WKWebView *)webView {
     if (webView != self.webView) return;
+    // A redirect to a client's custom scheme can fail as "unsupported URL" instead of asking for a policy.
+    NSURL *failed = error.userInfo[NSURLErrorFailingURLErrorKey];
+    NSString *failedScheme = [failed isKindOfClass:NSURL.class] ? failed.scheme.lowercaseString : nil;
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorUnsupportedURL && failedScheme.length &&
+        ![@[@"http", @"https", @"about", @"blob", @"data"] containsObject:failedScheme]) {
+        [self openExternally:failed];
+        [self notifyStateChanged];
+        return;
+    }
     BOOL cancelled = [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled;
     // WebKitErrorFrameLoadInterruptedByPolicyChange: the navigation turned into a download.
     BOOL interrupted = [error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102;

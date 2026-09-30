@@ -16,8 +16,14 @@ NSURL *BrowserHomeURL(void);
 @property (nonatomic, copy, nullable) void (^pageReady)(BrowserSession *session);
 /// A download finished (error is nil) or failed.
 @property (nonatomic, copy, nullable) void (^downloadEnded)(BrowserSession *session, NSURL *_Nullable file, NSError *_Nullable error);
+/// The page navigated to a non-web scheme (e.g. a client's callback) and it was passed to macOS;
+/// `opened` is NO when no app handles the scheme.
+@property (nonatomic, copy, nullable) void (^externalURLOpened)(BrowserSession *session, NSURL *url, BOOL opened);
 
 - (instancetype)initWithAccountID:(NSString *)accountID;
+/// `dataStore` defaults to the account's persistent store; pass a loaded session's store to share it.
+- (instancetype)initWithAccountID:(NSString *)accountID dataStore:(nullable WKWebsiteDataStore *)dataStore
+    initialURL:(NSURL *)initialURL;
 - (void)goHome;
 - (void)retry;
 - (void)invalidate;

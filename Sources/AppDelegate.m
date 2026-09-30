@@ -1,10 +1,12 @@
 #import "AppDelegate.h"
 #import "Account.h"
 #import "MainWindowController.h"
+#import "SettingsWindowController.h"
 
 @interface AppDelegate ()
 @property (nonatomic, strong) AccountStore *store;
 @property (nonatomic, strong) MainWindowController *windowController;
+@property (nonatomic, strong, nullable) SettingsWindowController *settingsController;
 @end
 
 @implementation AppDelegate
@@ -41,7 +43,15 @@
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return YES; }
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)app { return YES; }
-- (void)applicationWillTerminate:(NSNotification *)notification { [self.windowController prepareForTermination]; }
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    [self.settingsController commitEditing];
+    [self.windowController prepareForTermination];
+}
+
+- (void)showSettings:(id)sender {
+    if (!self.settingsController) self.settingsController = [SettingsWindowController new];
+    [self.settingsController showWindow:sender];
+}
 
 #pragma mark - Menus
 
@@ -74,6 +84,8 @@
     NSMenu *app = [self addMenu:@"ChatGPT Account Desk" to:mainMenu];
     [self add:@"关于 ChatGPT Account Desk" action:@selector(orderFrontStandardAboutPanel:) key:nil modifiers:0 to:app target:NSApp];
     [app addItem:[NSMenuItem separatorItem]];
+    [self add:@"设置…" action:@selector(showSettings:) key:@"," modifiers:command to:app target:self];
+    [app addItem:[NSMenuItem separatorItem]];
     [self add:@"隐藏 ChatGPT Account Desk" action:@selector(hide:) key:@"h" modifiers:command to:app target:NSApp];
     [self add:@"隐藏其他" action:@selector(hideOtherApplications:) key:@"h" modifiers:command | option to:app target:NSApp];
     [self add:@"全部显示" action:@selector(unhideAllApplications:) key:nil modifiers:0 to:app target:NSApp];
@@ -83,7 +95,8 @@
     NSMenu *file = [self addMenu:@"文件" to:mainMenu];
     [self add:@"添加账号…" action:@selector(addAccount:) key:@"n" modifiers:command to:file target:controller];
     [file addItem:[NSMenuItem separatorItem]];
-    [self add:@"导入账号资料…" action:@selector(importAccounts:) key:@"i" modifiers:command | shift to:file target:controller];
+    // No shortcut: ⇧⌘I belongs to ChatGPT's custom instructions and menu shortcuts win over the page.
+    [self add:@"导入账号资料…" action:@selector(importAccounts:) key:nil modifiers:0 to:file target:controller];
     [self add:@"导出全部账号资料…" action:@selector(exportAccounts:) key:@"e" modifiers:command | shift to:file target:controller];
     [self add:@"在访达中显示数据文件" action:@selector(revealDataFile:) key:nil modifiers:0 to:file target:controller];
     [file addItem:[NSMenuItem separatorItem]];
@@ -123,6 +136,7 @@
     [account addItem:[NSMenuItem separatorItem]];
     [self add:@"从当前页面读取订阅" action:@selector(syncSubscription:) key:nil modifiers:0 to:account target:controller];
     [self add:@"查看当前会话" action:@selector(showCurrentSession:) key:@"k" modifiers:command | shift to:account target:controller];
+    [self add:@"打开授权链接…" action:@selector(openAuthorizationLink:) key:@"l" modifiers:command | shift to:account target:controller];
     [account addItem:[NSMenuItem separatorItem]];
     [self add:@"重命名…" action:@selector(renameSelectedAccount:) key:nil modifiers:0 to:account target:controller];
     [self add:@"移动到分组…" action:@selector(moveSelectedToGroup:) key:nil modifiers:0 to:account target:controller];

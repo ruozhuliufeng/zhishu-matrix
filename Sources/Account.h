@@ -29,6 +29,8 @@ NSDate *_Nullable AccountDateFromDayString(NSString *_Nullable day);
 @property (nonatomic, copy, nullable) NSString *expirySource;
 @property (nonatomic, copy, null_resettable) NSString *group;
 @property (nonatomic, copy, null_resettable) NSString *notes;
+/// Client authorization link remembered for this account; empty means "use the default link".
+@property (nonatomic, copy, null_resettable) NSString *authURL;
 @property (nonatomic, strong, nullable) NSDate *createdAt;
 @property (nonatomic, strong, nullable) NSDate *lastUsedAt;
 @property (nonatomic, strong, nullable) NSNumber *signedIn;

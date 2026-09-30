@@ -3,6 +3,8 @@
 #import "Account.h"
 #import "AccountInspectorController.h"
 #import "AccountSidebarController.h"
+#import "AuthorizationLink.h"
+#import "AuthorizationWindowController.h"
 #import "BrowserPaneController.h"
 #import "BrowserSession.h"
 #import "DeskUI.h"
@@ -14,6 +16,7 @@ static NSToolbarItemIdentifier const ToolbarForward = @"forward";
 static NSToolbarItemIdentifier const ToolbarReload = @"reload";
 static NSToolbarItemIdentifier const ToolbarHome = @"home";
 static NSToolbarItemIdentifier const ToolbarSession = @"session";
+static NSToolbarItemIdentifier const ToolbarAuthorize = @"authorize";
 static NSToolbarItemIdentifier const ToolbarMode = @"mode";
 static NSToolbarItemIdentifier const ToolbarAdd = @"add";
 
@@ -75,6 +78,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 @property (nonatomic, strong) NSMutableDictionary<NSString *, BrowserSession *> *sessions;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *probeTokens;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *scripts;
+@property (nonatomic, strong) NSMutableArray<AuthorizationWindowController *> *authorizationWindows;
 @property (nonatomic) NSUInteger nextProbeToken;
 @end
 
@@ -90,6 +94,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
         _sessions = [NSMutableDictionary dictionary];
         _probeTokens = [NSMutableDictionary dictionary];
         _scripts = [NSMutableDictionary dictionary];
+        _authorizationWindows = [NSMutableArray array];
         __weak typeof(self) weakSelf = self;
         store.saveFailed = ^(NSError *error) {
             [weakSelf showError:@"无法保存账号列表" detail:error.localizedDescription];
@@ -672,6 +677,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
     }
 
     // WebKit only removes a data store once no web view uses it.
+    for (AuthorizationWindowController *authorization in self.authorizationWindows.copy)
+        if ([identifiers containsObject:authorization.accountID]) [authorization closeAuthorization];
     if ([identifiers containsObject:self.browser.session.accountID]) [self.browser showSession:nil];
     for (NSString *identifier in identifiers) [self.sessions[identifier] invalidate];
     [self.sessions removeObjectsForKeys:identifiers];
@@ -682,13 +689,26 @@ static BOOL IsChatGPTPage(NSURL *url) {
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        for (NSString *identifier in identifiers) {
-            [WKWebsiteDataStore removeDataStoreForIdentifier:[[NSUUID alloc] initWithUUIDString:identifier]
-                completionHandler:^(NSError *error) {
-                    if (error) [weakSelf showError:@"会话数据清除失败" detail:error.localizedDescription];
-                }];
-        }
+        for (NSString *identifier in identifiers) [weakSelf removeDataStoreForAccountID:identifier attempt:1];
     });
+}
+
+- (void)removeDataStoreForAccountID:(NSString *)identifier attempt:(NSUInteger)attempt {
+    __weak typeof(self) weakSelf = self;
+    [WKWebsiteDataStore removeDataStoreForIdentifier:[[NSUUID alloc] initWithUUIDString:identifier]
+        completionHandler:^(NSError *error) {
+            if (!error) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // Web views that used the store (e.g. a just-closed authorization window) are torn down asynchronously.
+                if (attempt >= 5) {
+                    [weakSelf showError:@"会话数据清除失败" detail:error.localizedDescription];
+                    return;
+                }
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [weakSelf removeDataStoreForAccountID:identifier attempt:attempt + 1];
+                });
+            });
+        }];
 }
 
 - (void)clearLoginDataForAccountIDs:(NSArray<NSString *> *)identifiers {
@@ -723,6 +743,88 @@ static BOOL IsChatGPTPage(NSURL *url) {
             [strongSelf.store commit];
             [strongSelf.sessions[identifier] goHome];
         }];
+}
+
+#pragma mark - Client authorization
+
+- (void)openAuthorizationLink:(id)sender {
+    NSArray<NSString *> *identifiers = [self targetAccountIDs];
+    if (identifiers.count == 1) [self promptAuthorizationForAccountID:identifiers.firstObject];
+}
+
+- (void)promptAuthorizationForAccountID:(NSString *)identifier {
+    Account *account = [self.store accountWithID:identifier];
+    if (!account) return;
+    NSString *initial = account.authURL.length ? account.authURL
+        : ([NSUserDefaults.standardUserDefaults stringForKey:DefaultAuthorizationURLDefaultsKey] ?: @"");
+    [self promptAuthorizationForAccount:account text:initial invalid:NO];
+}
+
+- (void)promptAuthorizationForAccount:(Account *)account text:(NSString *)text invalid:(BOOL)invalid {
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = [NSString stringWithFormat:@"用“%@”授权登录客户端", account.name];
+    alert.informativeText = invalid
+        ? @"无法识别授权链接，请粘贴以 http:// 或 https:// 开头的完整链接。"
+        : @"粘贴客户端提供的授权链接，它会在此账号的独立会话中打开；授权后客户端会通过回调地址自动完成登录。每次登录都会生成新链接的客户端（如 Codex）请使用最新的链接。";
+    if (invalid) alert.alertStyle = NSAlertStyleWarning;
+    NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 440, 98)];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 28, 440, 70)];
+    field.placeholderString = @"https://auth.openai.com/oauth/authorize?…";
+    field.usesSingleLineMode = NO;
+    field.cell.wraps = YES;
+    field.cell.scrollable = NO;
+    field.lineBreakMode = NSLineBreakByCharWrapping;
+    field.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    field.stringValue = text ?: @"";
+    NSButton *remember = [NSButton checkboxWithTitle:@"保存为此账号的授权链接" target:nil action:nil];
+    remember.frame = NSMakeRect(0, 0, 440, 20);
+    [accessory addSubview:field];
+    [accessory addSubview:remember];
+    alert.accessoryView = accessory;
+    [alert addButtonWithTitle:@"打开"];
+    [alert addButtonWithTitle:@"取消"];
+    [alert layout];
+    alert.window.initialFirstResponder = field;
+    NSString *identifier = account.identifier;
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        MainWindowController *strongSelf = weakSelf;
+        Account *current = [strongSelf.store accountWithID:identifier];
+        if (!current || response != NSAlertFirstButtonReturn) return;
+        NSURL *url = AuthorizationURLFromText(field.stringValue);
+        if (!url) {
+            NSString *typed = field.stringValue;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf promptAuthorizationForAccount:current text:typed invalid:YES];
+            });
+            return;
+        }
+        if (remember.state == NSControlStateValueOn && ![current.authURL isEqualToString:url.absoluteString]) {
+            current.authURL = url.absoluteString;
+            [strongSelf.store commit];
+        }
+        [strongSelf openAuthorizationURL:url forAccountID:identifier];
+    }];
+}
+
+- (AuthorizationWindowController *)openAuthorizationURL:(NSURL *)url forAccountID:(NSString *)identifier {
+    Account *account = [self.store accountWithID:identifier];
+    if (!account) return nil;
+    // Share the loaded page's store so a sign-in done in either window is visible to the other.
+    WKWebsiteDataStore *dataStore = self.sessions[identifier].webView.configuration.websiteDataStore;
+    AuthorizationWindowController *controller = [[AuthorizationWindowController alloc] initWithAccount:account
+        URL:url dataStore:dataStore];
+    __weak typeof(self) weakSelf = self;
+    controller.closed = ^(AuthorizationWindowController *closed) {
+        // Let the window finish closing before the controller that owns it is released.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf.authorizationWindows removeObject:closed];
+            if (weakSelf.sessions[closed.accountID]) [weakSelf scheduleProbesForAccountID:closed.accountID];
+        });
+    };
+    [self.authorizationWindows addObject:controller];
+    [controller showWindow:nil];
+    return controller;
 }
 
 #pragma mark - Import / export
@@ -812,6 +914,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
         [menu addItem:[self menuItem:@"重命名…" symbol:@"pencil" action:@selector(renameFromMenu:) object:ids]];
         if (account.email.length)
             [menu addItem:[self menuItem:@"复制邮箱" symbol:@"doc.on.doc" action:@selector(copyEmailFromMenu:) object:ids]];
+        [menu addItem:[self menuItem:@"打开授权链接…" symbol:@"person.badge.key" action:@selector(authorizeFromMenu:) object:ids]];
         [menu addItem:[NSMenuItem separatorItem]];
     }
 
@@ -840,6 +943,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 
 - (void)openFromMenu:(NSMenuItem *)sender { [self openAccountID:[sender.representedObject firstObject]]; }
 - (void)renameFromMenu:(NSMenuItem *)sender { [self renameAccountID:[sender.representedObject firstObject]]; }
+- (void)authorizeFromMenu:(NSMenuItem *)sender { [self promptAuthorizationForAccountID:[sender.representedObject firstObject]]; }
 - (void)promptGroupFromMenu:(NSMenuItem *)sender { [self promptGroupForAccountIDs:sender.representedObject]; }
 - (void)exportFromMenu:(NSMenuItem *)sender { [self exportAccountIDs:sender.representedObject]; }
 - (void)clearFromMenu:(NSMenuItem *)sender { [self clearLoginDataForAccountIDs:sender.representedObject]; }
@@ -903,7 +1007,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
         return self.selectedAccountID && self.sessions[self.selectedAccountID];
     if (action == @selector(selectPreviousAccount:) || action == @selector(selectNextAccount:))
         return self.sidebar.visibleAccountIDs.count > 1;
-    if (action == @selector(renameSelectedAccount:)) return [self targetAccountIDs].count == 1;
+    if (action == @selector(renameSelectedAccount:) || action == @selector(openAuthorizationLink:))
+        return [self targetAccountIDs].count == 1;
     if (action == @selector(moveSelectedToGroup:) || action == @selector(clearSelectedLoginData:) ||
         action == @selector(deleteSelectedAccounts:)) return [self targetAccountIDs].count > 0;
     if (action == @selector(exportAccounts:)) return self.store.accounts.count > 0;
@@ -934,7 +1039,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 - (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
     return @[NSToolbarToggleSidebarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier,
              ToolbarBack, ToolbarForward, NSToolbarFlexibleSpaceItemIdentifier, ToolbarMode, NSToolbarFlexibleSpaceItemIdentifier,
-             ToolbarReload, ToolbarHome, ToolbarSession,
+             ToolbarReload, ToolbarHome, ToolbarSession, ToolbarAuthorize,
              NSToolbarInspectorTrackingSeparatorItemIdentifier, NSToolbarFlexibleSpaceItemIdentifier,
              NSToolbarToggleInspectorItemIdentifier];
 }
@@ -961,6 +1066,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
         ToolbarReload: @[@"arrow.clockwise", @"重新载入", NSStringFromSelector(@selector(reloadPage:))],
         ToolbarHome: @[@"house", @"ChatGPT 首页", NSStringFromSelector(@selector(goHome:))],
         ToolbarSession: @[@"key.horizontal", @"查看当前会话", NSStringFromSelector(@selector(showCurrentSession:))],
+        ToolbarAuthorize: @[@"person.badge.key", @"用此账号授权登录客户端", NSStringFromSelector(@selector(openAuthorizationLink:))],
         ToolbarAdd: @[@"plus", @"添加账号", NSStringFromSelector(@selector(addAccount:))],
     };
     NSArray *spec = specs[identifier];

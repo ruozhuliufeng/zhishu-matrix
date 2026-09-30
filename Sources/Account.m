@@ -55,7 +55,7 @@ NSDate *AccountDateFromDayString(NSString *day) {
 
 static NSArray<NSString *> *KnownKeys(void) {
     return @[@"id", @"name", @"email", @"plan", @"planSource", @"expiresAt", @"expirySource",
-             @"group", @"notes", @"createdAt", @"lastUsedAt", @"signedIn"];
+             @"group", @"notes", @"authURL", @"createdAt", @"lastUsedAt", @"signedIn"];
 }
 
 @implementation Account {
@@ -84,6 +84,7 @@ static NSArray<NSString *> *KnownKeys(void) {
         _expirySource = _expiresAt ? StringOrNil(dictionary[@"expirySource"]) : nil;
         _group = Trimmed(StringOrNil(dictionary[@"group"]));
         _notes = StringOrNil(dictionary[@"notes"]) ?: @"";
+        _authURL = Trimmed(StringOrNil(dictionary[@"authURL"]));
         _createdAt = TimestampOrNil(dictionary[@"createdAt"]);
         _lastUsedAt = TimestampOrNil(dictionary[@"lastUsedAt"]);
         id signedIn = dictionary[@"signedIn"];
@@ -98,6 +99,7 @@ static NSArray<NSString *> *KnownKeys(void) {
 - (void)setEmail:(NSString *)email { _email = [Trimmed(email) copy]; }
 - (void)setGroup:(NSString *)group { _group = [Trimmed(group) copy]; }
 - (void)setNotes:(NSString *)notes { _notes = [notes ?: @"" copy]; }
+- (void)setAuthURL:(NSString *)authURL { _authURL = [Trimmed(authURL) copy]; }
 
 - (NSDictionary *)dictionaryRepresentation {
     NSMutableDictionary *dictionary = [_extras mutableCopy] ?: [NSMutableDictionary dictionary];
@@ -114,6 +116,7 @@ static NSArray<NSString *> *KnownKeys(void) {
     }
     if (self.group.length) dictionary[@"group"] = self.group;
     if (self.notes.length) dictionary[@"notes"] = self.notes;
+    if (self.authURL.length) dictionary[@"authURL"] = self.authURL;
     if (self.createdAt) dictionary[@"createdAt"] = [TimestampFormatter() stringFromDate:self.createdAt];
     if (self.lastUsedAt) dictionary[@"lastUsedAt"] = [TimestampFormatter() stringFromDate:self.lastUsedAt];
     if (self.signedIn) dictionary[@"signedIn"] = self.signedIn;
@@ -134,6 +137,7 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (other.expiresAt) { self.expiresAt = other.expiresAt; self.expirySource = other.expirySource; }
     if (other.group.length) self.group = other.group;
     if (other.notes.length) self.notes = other.notes;
+    if (other.authURL.length) self.authURL = other.authURL;
     if (other.createdAt && (!self.createdAt || [other.createdAt compare:self.createdAt] == NSOrderedAscending))
         self.createdAt = other.createdAt;
 }

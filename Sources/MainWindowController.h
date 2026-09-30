@@ -1,12 +1,16 @@
 #import <Cocoa/Cocoa.h>
 #import "AccountCoordinator.h"
 
+@class AuthorizationWindowController;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface MainWindowController : NSWindowController <AccountCoordinator>
 - (instancetype)initWithStore:(AccountStore *)store;
 - (void)showError:(NSString *)title detail:(nullable NSString *)detail;
 - (void)prepareForTermination;
+/// Opens `url` in a new authorization window signed in as the account.
+- (nullable AuthorizationWindowController *)openAuthorizationURL:(NSURL *)url forAccountID:(NSString *)identifier;
 
 - (IBAction)revealDataFile:(nullable id)sender;
 - (IBAction)focusSearch:(nullable id)sender;

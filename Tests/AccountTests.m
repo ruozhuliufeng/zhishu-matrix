@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "../Sources/Account.h"
+#import "../Sources/AuthorizationLink.h"
 #import "../Sources/SubscriptionParser.h"
 
 static int failures = 0;
@@ -155,6 +156,48 @@ static void TestParser(void) {
     CHECK([SubscriptionParser planFromPlanType:@"mystery"] == nil, "ignores unknown plan types");
 }
 
+static void TestAuthorizationLinks(void) {
+    NSString *codex = @"https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_x"
+        "&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile&state=abc";
+    CHECK([AuthorizationURLFromText(codex).absoluteString isEqualToString:codex], "accepts a full authorization link");
+    CHECK([AuthorizationURLFromText([NSString stringWithFormat:@"  %@\n", codex]).absoluteString isEqualToString:codex],
+        "trims surrounding whitespace");
+    NSString *wrapped = [NSString stringWithFormat:@"%@\n%@", [codex substringToIndex:60], [codex substringFromIndex:60]];
+    CHECK([AuthorizationURLFromText(wrapped).absoluteString isEqualToString:codex], "joins a link wrapped across lines");
+    NSString *prose = [NSString stringWithFormat:@"If your browser did not open, navigate to this URL to authenticate:\n\n%@\n", codex];
+    CHECK([AuthorizationURLFromText(prose).host isEqualToString:@"auth.openai.com"], "finds the link inside CLI output");
+    CHECK([AuthorizationURLFromText(@"https://client.example.com/login?名称=工作").host isEqualToString:@"client.example.com"],
+        "accepts links with unencoded characters");
+    CHECK(AuthorizationURLFromText(@"") == nil, "rejects empty input");
+    CHECK(AuthorizationURLFromText(@"not a link") == nil, "rejects plain text");
+    CHECK(AuthorizationURLFromText(@"javascript:alert(1)") == nil, "rejects non-web schemes");
+    CHECK(AuthorizationURLFromText(@"ftp://example.com/x") == nil, "rejects ftp links");
+
+    CHECK(AuthorizationIsLoopbackURL([NSURL URLWithString:@"http://localhost:1455/auth/callback"]), "localhost is loopback");
+    CHECK(AuthorizationIsLoopbackURL([NSURL URLWithString:@"http://127.0.0.1:8080/cb"]), "127.0.0.1 is loopback");
+    CHECK(AuthorizationIsLoopbackURL([NSURL URLWithString:@"http://[::1]:8080/cb"]), "::1 is loopback");
+    CHECK(!AuthorizationIsLoopbackURL([NSURL URLWithString:@"https://auth.openai.com/"]), "remote hosts are not loopback");
+    CHECK(!AuthorizationIsLoopbackURL([NSURL URLWithString:@"http://localhost.example.com/"]), "lookalike hosts are not loopback");
+
+    CHECK([AuthorizationOrigin([NSURL URLWithString:@"https://auth.openai.com/a?b"]) isEqualToString:@"https://auth.openai.com:443"],
+        "origins include the default port");
+    CHECK(![AuthorizationOrigin([NSURL URLWithString:@"http://localhost:1455/x"])
+        isEqualToString:AuthorizationOrigin([NSURL URLWithString:@"http://localhost:1456/x"])], "ports distinguish origins");
+
+    Account *account = [Account accountWithName:@"x"];
+    account.authURL = @"  https://client.example.com/login  ";
+    CHECK([account.authURL isEqualToString:@"https://client.example.com/login"], "trims saved authorization links");
+    CHECK([account.dictionaryRepresentation[@"authURL"] isEqualToString:account.authURL], "saves the authorization link");
+    CHECK([account.exportRepresentation[@"authURL"] isEqualToString:account.authURL], "exports the authorization link");
+    Account *reloaded = [[Account alloc] initWithDictionary:account.dictionaryRepresentation];
+    CHECK([reloaded.authURL isEqualToString:account.authURL], "reloads the authorization link");
+    Account *incoming = [[Account alloc] initWithDictionary:@{@"id": account.identifier, @"name": @"x"}];
+    [account applyProfileFrom:incoming];
+    CHECK(account.authURL.length > 0, "an import without a link keeps the local one");
+    account.authURL = nil;
+    CHECK(account.authURL.length == 0 && !account.dictionaryRepresentation[@"authURL"], "clearing the link removes it");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -164,6 +207,7 @@ int main(void) {
         TestImport();
         TestUnreadableFileIsBackedUp();
         TestParser();
+        TestAuthorizationLinks();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
