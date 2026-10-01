@@ -14,6 +14,7 @@
 - (NSURL *)resolvedDataDirectory {
     if (self.dataDirectory) return self.dataDirectory;
     NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
+    // Kept from the app's former name (ChatGPT Account Desk) so existing accounts carry over.
     return [support URLByAppendingPathComponent:@"ChatGPTAccountDesk" isDirectory:YES];
 }
 
@@ -81,16 +82,16 @@
     NSString *down = [NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey];
     NSMenu *mainMenu = [NSMenu new];
 
-    NSMenu *app = [self addMenu:@"ChatGPT Account Desk" to:mainMenu];
-    [self add:@"关于 ChatGPT Account Desk" action:@selector(orderFrontStandardAboutPanel:) key:nil modifiers:0 to:app target:NSApp];
+    NSMenu *app = [self addMenu:@"智枢矩阵" to:mainMenu];
+    [self add:@"关于智枢矩阵" action:@selector(orderFrontStandardAboutPanel:) key:nil modifiers:0 to:app target:NSApp];
     [app addItem:[NSMenuItem separatorItem]];
     [self add:@"设置…" action:@selector(showSettings:) key:@"," modifiers:command to:app target:self];
     [app addItem:[NSMenuItem separatorItem]];
-    [self add:@"隐藏 ChatGPT Account Desk" action:@selector(hide:) key:@"h" modifiers:command to:app target:NSApp];
+    [self add:@"隐藏智枢矩阵" action:@selector(hide:) key:@"h" modifiers:command to:app target:NSApp];
     [self add:@"隐藏其他" action:@selector(hideOtherApplications:) key:@"h" modifiers:command | option to:app target:NSApp];
     [self add:@"全部显示" action:@selector(unhideAllApplications:) key:nil modifiers:0 to:app target:NSApp];
     [app addItem:[NSMenuItem separatorItem]];
-    [self add:@"退出 ChatGPT Account Desk" action:@selector(terminate:) key:@"q" modifiers:command to:app target:NSApp];
+    [self add:@"退出智枢矩阵" action:@selector(terminate:) key:@"q" modifiers:command to:app target:NSApp];
 
     NSMenu *file = [self addMenu:@"文件" to:mainMenu];
     [self add:@"添加账号…" action:@selector(addAccount:) key:@"n" modifiers:command to:file target:controller];

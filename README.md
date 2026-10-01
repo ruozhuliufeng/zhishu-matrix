@@ -1,12 +1,12 @@
-# ChatGPT Account Desk
+# 智枢矩阵
 
-macOS 14+ 的本地多账号 ChatGPT 会话管理器。每个账号使用独立的 WebKit 持久数据仓库，互不影响。账号资料（名称、邮箱、分组、订阅级别、到期日期、备注等）保存在 `~/Library/Application Support/ChatGPTAccountDesk/accounts.json`；密码由 ChatGPT 登录页面处理，应用不读取或保存密码。
+macOS 14+ 的本地多账号 ChatGPT 会话管理器（0.2.6 及之前名为 ChatGPT Account Desk）。每个账号使用独立的 WebKit 持久数据仓库，互不影响。账号资料（名称、邮箱、分组、订阅级别、到期日期、备注等）保存在 `~/Library/Application Support/ChatGPTAccountDesk/accounts.json`；密码由 ChatGPT 登录页面处理，应用不读取或保存密码。
 
 ## 构建与运行
 
 ```sh
 zsh scripts/build-app.sh
-open "build/ChatGPT Account Desk.app"
+open "build/智枢矩阵.app"
 ```
 
 需要 macOS 14+ 和 Apple Command Line Tools。生成的 `.app` 位于 `build/`，采用本机临时签名，未经过 Apple 公证。
@@ -102,6 +102,8 @@ Codex（CLI、IDE 插件）等支持“使用 ChatGPT 登录”的客户端会�
 “导入账号资料”没有快捷键，因为 `⇧⌘I` 是 ChatGPT 网页“自定义指令”的快捷键。在账号列表或管理表格中，按 `Return` 打开账号，按 `Delete` 删除所选账号（会先确认）。网页输入框与账号资料字段支持 macOS 标准的撤销、重做、剪切、复制、粘贴和全选快捷键。
 
 ## 数据文件
+
+从 0.2.7 起应用改名为“智枢矩阵”，但应用标识（`local.zhishu.chatgpt-account-desk`）和数据目录保持不变，旧版本的账号资料和各账号的登录状态会直接沿用，无需重新登录。改名后请删除旧的 `ChatGPT Account Desk.app`，避免两个版本同时运行。
 
 `accounts.json` 是账号资料数组，旧版本的文件可以直接读取，未知字段会原样保留。启动时如果文件无法解析，应用会先把它备份为同目录下的 `accounts.unreadable-<时间>.json`，再以空列表启动。“文件 → 在访达中显示数据文件”可以打开所在目录。
 

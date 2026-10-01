@@ -120,7 +120,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 
 - (void)buildWindow {
     NSWindow *window = self.window;
-    window.title = @"ChatGPT Account Desk";
+    window.title = @"智枢矩阵";
     window.minSize = NSMakeSize(980, 620);
     window.toolbarStyle = NSWindowToolbarStyleUnified;
     window.delegate = self;
@@ -281,7 +281,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 
 - (void)updateWindowTitle {
     Account *account = [self.store accountWithID:self.selectedAccountID];
-    NSString *title = @"ChatGPT Account Desk";
+    NSString *title = @"智枢矩阵";
     NSString *subtitle = @"";
     if (self.mode == DeskModeManagement) {
         title = @"账号管理";
