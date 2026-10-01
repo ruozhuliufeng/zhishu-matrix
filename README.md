@@ -17,7 +17,7 @@ open "build/ChatGPT Account Desk.app"
 zsh scripts/test.sh
 ```
 
-仓库中的 `dist/ChatGPT-Account-Desk-v0.2.5-macos.zip` 是 0.2.5 版本的 macOS 应用包（Apple 芯片），解压后即可得到 `.app`；上一版本 `v0.2.4` 的应用包仍保留在 `dist/` 中。
+仓库中的 `dist/ChatGPT-Account-Desk-v0.2.6-macos.zip` 是 0.2.6 版本的 macOS 应用包（Apple 芯片），解压后即可得到 `.app`；之前版本的应用包仍保留在 `dist/` 中。
 
 图标母图为 `Resources/AppIcon-source.png`；构建脚本会生成多尺寸的 `Resources/AppIcon.icns` 并放入应用包。
 
