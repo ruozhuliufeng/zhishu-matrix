@@ -1,11 +1,12 @@
 #import <Cocoa/Cocoa.h>
 #import "AccountCoordinator.h"
 
-@class AuthorizationWindowController;
+@class AccountRefresher, AuthorizationWindowController;
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface MainWindowController : NSWindowController <AccountCoordinator>
+@property (nonatomic, readonly) AccountRefresher *refresher;
 - (instancetype)initWithStore:(AccountStore *)store;
 - (void)showError:(NSString *)title detail:(nullable NSString *)detail;
 - (void)prepareForTermination;
@@ -29,6 +30,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)moveSelectedToGroup:(nullable id)sender;
 - (IBAction)clearSelectedLoginData:(nullable id)sender;
 - (IBAction)deleteSelectedAccounts:(nullable id)sender;
+- (IBAction)refreshSelectedUsage:(nullable id)sender;
+- (IBAction)addTagsToSelected:(nullable id)sender;
+- (IBAction)readBillingForSelected:(nullable id)sender;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -12,6 +12,11 @@ NSBox *DeskSeparator(void);
 NSColor *DeskColorForSeed(NSString *seed);
 NSColor *DeskColorForPlan(NSString *_Nullable plan);
 NSColor *DeskColorForExpiry(AccountExpiryState state);
+/// Green with plenty left, orange under half, red under a fifth.
+NSColor *DeskColorForQuota(double remainingPercent);
+NSColor *DeskColorForTag(NSString *tag);
+/// "3 小时后重置", "6 天后重置".
+NSString *DeskResetDescription(NSDate *_Nullable resetAt);
 NSString *DeskRelativeTime(NSDate *_Nullable date);
 NSString *DeskDateTimeString(NSDate *_Nullable date);
 
@@ -34,6 +39,17 @@ NSString *DeskDateTimeString(NSDate *_Nullable date);
 @interface DeskPillView : NSView
 @property (nonatomic, copy) NSString *text;
 @property (nonatomic, strong) NSColor *tintColor;
+@property (nonatomic) NSBackgroundStyle backgroundStyle;
+@end
+
+/// Rounded usage bar; draws an empty track when the value is unknown.
+@interface DeskQuotaBar : NSView
+@property (nonatomic, strong, nullable) NSNumber *remainingPercent;
+@end
+
+/// A row of tag capsules that truncates with "+N".
+@interface DeskTagsView : NSView
+@property (nonatomic, copy) NSArray<NSString *> *tags;
 @property (nonatomic) NSBackgroundStyle backgroundStyle;
 @end
 

@@ -198,6 +198,114 @@ static void TestAuthorizationLinks(void) {
     CHECK(account.authURL.length == 0 && !account.dictionaryRepresentation[@"authURL"], "clearing the link removes it");
 }
 
+static void TestPlanTiersAndTags(void) {
+    CHECK([AccountCanonicalPlan(@"ChatGPT Pro 200") isEqualToString:@"Pro 200"], "reads tier names");
+    CHECK([AccountCanonicalPlan(@"pro500") isEqualToString:@"Pro 500"], "reads compact tier names");
+    CHECK([AccountCanonicalPlan(@"PRO") isEqualToString:@"Pro"], "keeps tier-less Pro");
+    CHECK([AccountCanonicalPlan(@"team") isEqualToString:@"Business"], "maps team to Business");
+    CHECK(AccountCanonicalPlan(@"Pro 300") == nil, "rejects unknown tiers");
+    CHECK([AccountPlanFamily(@"Pro 100") isEqualToString:@"Pro"] && [AccountPlanFamily(@"Plus") isEqualToString:@"Plus"], "groups tiers into a family");
+
+    Account *account = [Account accountWithName:@"x"];
+    CHECK([account applyDetectedPlan:@"Pro 200" source:@"page"], "applies a detected tier");
+    CHECK(![account applyDetectedPlan:@"pro" source:@"page"] && [account.plan isEqualToString:@"Pro 200"],
+        "a tier-less Pro from the API keeps the known tier");
+    CHECK([account applyDetectedPlan:@"plus" source:@"api"] && [account.plan isEqualToString:@"Plus"], "a different family replaces the plan");
+
+    account.tags = @[@" 主力 ", @"备用", @"主力", @""];
+    CHECK([account.tags isEqualToArray:(@[@"主力", @"备用"])], "normalizes tags");
+    CHECK([account matchesSearch:@"备用"], "search covers tags");
+    Account *reloaded = [[Account alloc] initWithDictionary:account.dictionaryRepresentation];
+    CHECK([reloaded.tags isEqualToArray:account.tags], "round-trips tags");
+    Account *incoming = [[Account alloc] initWithDictionary:@{@"id": account.identifier, @"name": @"x", @"tags": @[@"风控", @"主力"]}];
+    [account applyProfileFrom:incoming];
+    CHECK([account.tags isEqualToArray:(@[@"主力", @"备用", @"风控"])], "imports merge tags");
+}
+
+static void TestRenewalAndPrice(void) {
+    NSDate *today = AccountDateFromDayString(@"2026-10-01");
+    Account *account = [Account accountWithName:@"x"];
+    account.expiresAt = @"2026-10-04";
+    account.autoRenew = @YES;
+    CHECK([account expiryStateFromDate:today] == AccountExpiryStateRenewing, "auto-renewing accounts are not expiring");
+    CHECK([[account expiryDescriptionFromDate:today] isEqualToString:@"3 天后续费"], "describes renewals");
+    CHECK([account.renewalDescription isEqualToString:@"10月4日自动续费"], "describes the renewal day");
+    account.autoRenew = @NO;
+    CHECK([account expiryStateFromDate:today] == AccountExpiryStateExpiringSoon, "cancelled plans expire");
+    CHECK([account.renewalDescription isEqualToString:@"10月4日到期"], "describes the expiry day");
+
+    account.plan = @"Pro 200";
+    account.monthlyPrice = @8919.64;
+    account.currency = @"php";
+    CHECK([account.currency isEqualToString:@"PHP"], "uppercases currencies");
+    CHECK([AccountFormatMoney(account.monthlyPrice, account.currency) isEqualToString:@"PHP 8,919.64"], "formats money");
+    Account *reloaded = [[Account alloc] initWithDictionary:account.dictionaryRepresentation];
+    CHECK([reloaded.monthlyPrice isEqual:@8919.64] && [reloaded.autoRenew isEqual:@NO], "round-trips price and renewal");
+
+    AccountStore *store = [[AccountStore alloc] initWithFileURL:[NSURL fileURLWithPath:@"/dev/null"]];
+    Account *a = [store addAccountNamed:@"a" group:nil]; a.plan = @"Pro 200"; a.monthlyPrice = @100; a.currency = @"PHP";
+    Account *b = [store addAccountNamed:@"b" group:nil]; b.plan = @"Plus"; b.monthlyPrice = @20.5; b.currency = @"PHP";
+    Account *c = [store addAccountNamed:@"c" group:nil]; c.plan = @"Plus"; c.monthlyPrice = @20; c.currency = @"USD";
+    Account *d = [store addAccountNamed:@"d" group:nil]; d.plan = @"Free"; d.monthlyPrice = @99; d.currency = @"USD";
+    NSDictionary *totals = store.monthlySpendByCurrency;
+    CHECK([totals[@"PHP"] isEqual:@120.5] && [totals[@"USD"] isEqual:@20], "sums paid monthly prices per currency");
+}
+
+static void TestBillingPage(void) {
+    NSString *zh = @"账单\nChatGPT Pro 200\n您的套餐将在 2026年10月25日 自动续订\n更改套餐\n交易记录\nChatGPT Pro 200\n2026/9/25\n已支付\nPHP 8,919.64\n"
+        "ChatGPT Pro 200\n2026/8/25\n已支付\nPHP 8,919.64\n账单信息\n账单地址\n27072 Ballston Rd\nSheridan, OR, 97378";
+    CHECK([[SubscriptionParser planFromBillingText:zh] isEqualToString:@"Pro 200"], "reads the tier from the billing page");
+    NSDictionary *renewal = [SubscriptionParser renewalFromBillingText:zh];
+    CHECK([renewal[@"date"] isEqualToString:@"2026-10-25"] && [renewal[@"autoRenew"] isEqual:@YES], "reads the Chinese renewal date");
+    NSDictionary *price = [SubscriptionParser priceFromBillingText:zh];
+    CHECK([price[@"currency"] isEqualToString:@"PHP"] && [price[@"amount"] isEqual:@8919.64], "reads the latest charge");
+    CHECK([[SubscriptionParser planFromProfile:@"" details:zh] isEqualToString:@"Pro 200"], "page reads prefer the billing tier");
+
+    NSString *en = @"Billing\nChatGPT Plus\nYour plan will be canceled on November 3, 2026\nInvoices\nOct 3, 2026 Paid US$20.00";
+    NSDictionary *cancel = [SubscriptionParser renewalFromBillingText:en];
+    CHECK([cancel[@"date"] isEqualToString:@"2026-11-03"] && [cancel[@"autoRenew"] isEqual:@NO], "reads a cancellation date");
+    NSDictionary *usd = [SubscriptionParser priceFromBillingText:en];
+    CHECK([usd[@"currency"] isEqualToString:@"USD"] && [usd[@"amount"] isEqual:@20], "reads symbol prices");
+    CHECK([[SubscriptionParser renewalFromBillingText:@"Your plan renews on Oct 25, 2026"][@"autoRenew"] isEqual:@YES],
+        "reads an English renewal");
+    CHECK([[SubscriptionParser priceFromBillingText:@"每月 ₱9,990"][@"currency"] isEqualToString:@"PHP"], "maps peso signs");
+    CHECK([SubscriptionParser priceFromBillingText:@"GPT 5 is here"] == nil, "ignores non-currency words");
+    NSString *upgrade = @"升级套餐\nChatGPT Plus\nUSD 20/月\nChatGPT Pro\nUSD 200/月";
+    CHECK(![SubscriptionParser isBillingText:upgrade] && [SubscriptionParser isBillingText:zh], "tells the billing page from the upgrade dialog");
+    CHECK([SubscriptionParser planFromProfile:@"" details:upgrade] == nil, "the upgrade dialog does not set a plan");
+}
+
+static void TestBackendJSON(void) {
+    NSDictionary *usageJSON = @{
+        @"plan_type": @"pro",
+        @"rate_limit": @{
+            @"primary_window": @{@"used_percent": @20, @"limit_window_seconds": @18000, @"reset_at": @1790000000},
+            @"secondary_window": @{@"used_percent": @91, @"limit_window_seconds": @604800, @"reset_at": @1790500000}
+        },
+        @"credits": @{@"has_credits": @YES, @"unlimited": @NO, @"balance": @"62500"}
+    };
+    NSString *planType = nil;
+    AccountUsage *usage = [SubscriptionParser usageFromJSON:usageJSON planType:&planType];
+    CHECK([planType isEqualToString:@"pro"], "reads plan_type");
+    CHECK(usage.windows.count == 2 && usage.shortWindow.remainingPercent == 80 && usage.longWindow.remainingPercent == 9,
+        "reads both usage windows");
+    CHECK([usage.shortWindow.title isEqualToString:@"5 小时"] && [usage.longWindow.title isEqualToString:@"每周"], "names the windows");
+    CHECK(usage.longWindow.resetAt.timeIntervalSince1970 == 1790500000, "reads reset times");
+    CHECK([usage.creditBalance isEqual:@62500] && [usage.lowestRemainingPercent isEqual:@9], "reads credits and the tightest window");
+    AccountUsage *roundTrip = [[AccountUsage alloc] initWithDictionary:usage.dictionaryRepresentation];
+    CHECK(roundTrip.windows.count == 2 && roundTrip.longWindow.usedPercent == 91 && [roundTrip.creditBalance isEqual:@62500],
+        "round-trips usage snapshots");
+    CHECK([SubscriptionParser usageFromJSON:@{@"plan_type": @"free"} planType:NULL] == nil, "no windows means no snapshot");
+
+    NSDictionary *subscription = [SubscriptionParser subscriptionFromJSON:@{
+        @"active_until": @"2026-10-25T08:30:00.123456+00:00", @"will_renew": @YES, @"plan": @"chatgptpro200"}];
+    CHECK(subscription[@"expiresAt"] && [subscription[@"autoRenew"] isEqual:@YES], "reads active_until and will_renew");
+    CHECK([subscription[@"plan"] isEqualToString:@"Pro 200"], "spots a Pro tier in subscription values");
+    NSDictionary *freeSubscription = @{@"active_until": [NSNull null], @"will_renew": [NSNull null]};
+    CHECK([SubscriptionParser subscriptionFromJSON:freeSubscription] == nil, "a free account has no subscription data");
+    CHECK([[SubscriptionParser planFromPlanType:@"pro"] isEqualToString:@"Pro"], "maps plan_type pro");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -208,6 +316,10 @@ int main(void) {
         TestUnreadableFileIsBackedUp();
         TestParser();
         TestAuthorizationLinks();
+        TestPlanTiersAndTags();
+        TestRenewalAndPrice();
+        TestBillingPage();
+        TestBackendJSON();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

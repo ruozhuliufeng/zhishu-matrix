@@ -11,6 +11,7 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
 @property (nonatomic, strong) NSTextField *nameLabel;
 @property (nonatomic, strong) NSTextField *detailLabel;
 @property (nonatomic, strong) DeskPillView *pill;
+@property (nonatomic, strong) DeskQuotaBar *quotaBar;
 @property (nonatomic, strong) NSColor *detailColor;
 - (void)configureWithAccount:(Account *)account now:(NSDate *)now;
 @end
@@ -23,7 +24,8 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
         _detailLabel = DeskLabel(@"", 11, NSFontWeightRegular);
         _detailColor = NSColor.secondaryLabelColor;
         _pill = [DeskPillView new];
-        for (NSView *view in @[_avatar, _nameLabel, _detailLabel, _pill]) {
+        _quotaBar = [DeskQuotaBar new];
+        for (NSView *view in @[_avatar, _nameLabel, _detailLabel, _pill, _quotaBar]) {
             view.translatesAutoresizingMaskIntoConstraints = NO;
             [self addSubview:view];
         }
@@ -42,7 +44,11 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
             [_detailLabel.topAnchor constraintEqualToAnchor:self.centerYAnchor constant:2],
             [_detailLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-6],
             [_pill.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-4],
-            [_pill.centerYAnchor constraintEqualToAnchor:_nameLabel.centerYAnchor]
+            [_pill.centerYAnchor constraintEqualToAnchor:_nameLabel.centerYAnchor],
+            [_quotaBar.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
+            [_quotaBar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6],
+            [_quotaBar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-3],
+            [_quotaBar.heightAnchor constraintEqualToConstant:3]
         ]];
     }
     return self;
@@ -55,6 +61,9 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
     self.nameLabel.stringValue = account.name;
     self.pill.text = account.plan ?: @"";
     self.pill.tintColor = DeskColorForPlan(account.plan);
+    AccountUsageWindow *weekly = account.usage.longWindow ?: account.usage.shortWindow;
+    self.quotaBar.hidden = weekly == nil;
+    self.quotaBar.remainingPercent = weekly ? @(weekly.remainingPercent) : nil;
 
     AccountExpiryState state = [account expiryStateFromDate:now];
     NSString *detail = nil;
@@ -64,6 +73,13 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
         color = DeskColorForExpiry(state);
     } else if (account.signedIn && !account.signedIn.boolValue) {
         detail = @"未登录";
+    } else if (account.usage.windows.count) {
+        NSMutableArray *parts = [NSMutableArray array];
+        if (account.usage.longWindow) [parts addObject:[NSString stringWithFormat:@"周剩 %.0f%%", account.usage.longWindow.remainingPercent]];
+        if (account.usage.shortWindow) [parts addObject:[NSString stringWithFormat:@"5 小时剩 %.0f%%", account.usage.shortWindow.remainingPercent]];
+        detail = [parts componentsJoinedByString:@" · "];
+        NSNumber *lowest = account.usage.lowestRemainingPercent;
+        if (lowest.doubleValue < 20) color = NSColor.systemRedColor;
     } else if (account.email.length) {
         detail = account.email;
     } else if (state == AccountExpiryStateActive) {
@@ -77,6 +93,7 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
     NSMutableArray *tip = [NSMutableArray arrayWithObject:account.name];
     if (account.email.length) [tip addObject:account.email];
     [tip addObject:[NSString stringWithFormat:@"%@ · %@", account.planTitle, [account expiryDescriptionFromDate:now]]];
+    if (account.tags.count) [tip addObject:[@"标签：" stringByAppendingString:[account.tags componentsJoinedByString:@"、"]]];
     self.toolTip = [tip componentsJoinedByString:@"\n"];
 }
 

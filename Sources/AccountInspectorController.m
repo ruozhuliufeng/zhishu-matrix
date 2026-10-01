@@ -1,5 +1,6 @@
 #import "AccountInspectorController.h"
 #import "Account.h"
+#import "AccountCardItem.h"
 #import "AuthorizationLink.h"
 #import "DeskUI.h"
 
@@ -9,10 +10,11 @@ static NSString *SourceName(NSString *source, id value) {
     if (!value) return @"未获取";
     if ([source isEqualToString:@"page"]) return @"页面识别";
     if ([source isEqualToString:@"manual"]) return @"手动填写";
+    if ([source isEqualToString:@"api"]) return @"接口读取";
     return @"已保存";
 }
 
-@interface AccountInspectorController () <NSTextFieldDelegate, NSComboBoxDelegate, NSTextViewDelegate>
+@interface AccountInspectorController () <NSTextFieldDelegate, NSComboBoxDelegate, NSTextViewDelegate, NSTokenFieldDelegate>
 @property (nonatomic, weak) id<AccountCoordinator> coordinator;
 @property (nonatomic, copy, nullable) NSString *accountID;
 @property (nonatomic) NSUInteger selectionCount;
@@ -31,6 +33,15 @@ static NSString *SourceName(NSString *source, id value) {
 @property (nonatomic, strong) NSTextField *nameField;
 @property (nonatomic, strong) NSTextField *emailField;
 @property (nonatomic, strong) NSComboBox *groupBox;
+@property (nonatomic, strong) NSTokenField *tagsField;
+@property (nonatomic, strong) DeskQuotaRow *shortRow;
+@property (nonatomic, strong) DeskQuotaRow *longRow;
+@property (nonatomic, strong) NSTextField *usageLabel;
+@property (nonatomic, strong) NSButton *refreshButton;
+@property (nonatomic, strong) NSProgressIndicator *refreshSpinner;
+@property (nonatomic, strong) NSButton *autoRenewToggle;
+@property (nonatomic, strong) NSTextField *priceField;
+@property (nonatomic, strong) NSComboBox *currencyBox;
 @property (nonatomic, strong) NSPopUpButton *planPicker;
 @property (nonatomic, strong) NSButton *dateToggle;
 @property (nonatomic, strong) NSDatePicker *datePicker;
@@ -126,6 +137,25 @@ static NSString *SourceName(NSString *source, id value) {
     self.groupBox.delegate = self;
     self.groupBox.target = self;
     self.groupBox.action = @selector(groupChosen:);
+    self.tagsField = [NSTokenField new];
+    self.tagsField.placeholderString = @"添加标签，回车或逗号分隔";
+    self.tagsField.tokenizingCharacterSet = [NSCharacterSet characterSetWithCharactersInString:@",，"];
+    self.tagsField.delegate = self;
+
+    // Usage
+    self.shortRow = [DeskQuotaRow new];
+    self.longRow = [DeskQuotaRow new];
+    self.usageLabel = [NSTextField wrappingLabelWithString:@""];
+    self.usageLabel.font = [NSFont systemFontOfSize:11];
+    self.usageLabel.textColor = NSColor.secondaryLabelColor;
+    self.refreshButton = DeskButton(@"刷新用量与订阅", @"arrow.clockwise", self, @selector(refreshUsage:));
+    self.refreshButton.toolTip = @"从 ChatGPT 读取此账号的额度、续费日期和是否自动续订";
+    self.refreshSpinner = [NSProgressIndicator new];
+    self.refreshSpinner.style = NSProgressIndicatorStyleSpinning;
+    self.refreshSpinner.controlSize = NSControlSizeSmall;
+    self.refreshSpinner.displayedWhenStopped = NO;
+    NSStackView *refreshRow = [NSStackView stackViewWithViews:@[self.refreshButton, self.refreshSpinner]];
+    refreshRow.spacing = 8;
 
     // Subscription
     self.planPicker = [NSPopUpButton new];
@@ -134,7 +164,7 @@ static NSString *SourceName(NSString *source, id value) {
     [self.planPicker addItemsWithTitles:AccountPlans()];
     self.planPicker.target = self;
     self.planPicker.action = @selector(planChanged:);
-    self.dateToggle = [NSButton checkboxWithTitle:@"设置到期日期" target:self action:@selector(dateToggled:)];
+    self.dateToggle = [NSButton checkboxWithTitle:@"设置续费 / 到期日期" target:self action:@selector(dateToggled:)];
     self.datePicker = [NSDatePicker new];
     self.datePicker.datePickerStyle = NSDatePickerStyleTextField;
     self.datePicker.datePickerElements = NSDatePickerElementFlagYearMonthDay;
@@ -155,8 +185,29 @@ static NSString *SourceName(NSString *source, id value) {
     [self.datePicker setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.sourceLabel = DeskLabel(@"", 11, NSFontWeightRegular);
     self.sourceLabel.textColor = NSColor.secondaryLabelColor;
-    NSButton *syncButton = DeskButton(@"从当前页面读取订阅", @"arrow.triangle.2.circlepath", self.coordinator, @selector(syncSubscription:));
-    syncButton.toolTip = @"在 ChatGPT 中打开账号设置里的订阅信息后读取，可识别到期日期";
+    self.autoRenewToggle = [NSButton checkboxWithTitle:@"到期自动续费" target:self action:@selector(autoRenewToggled:)];
+    self.autoRenewToggle.toolTip = @"自动续费的账号在日期到来时续订，不算作即将到期";
+    self.priceField = [NSTextField new];
+    self.priceField.placeholderString = @"月费";
+    self.priceField.delegate = self;
+    NSNumberFormatter *priceFormatter = [NSNumberFormatter new];
+    priceFormatter.numberStyle = NSNumberFormatterDecimalStyle;
+    priceFormatter.minimum = @0;
+    priceFormatter.maximumFractionDigits = 2;
+    priceFormatter.lenient = YES;
+    self.priceField.formatter = priceFormatter;
+    self.currencyBox = [NSComboBox new];
+    [self.currencyBox addItemsWithObjectValues:@[@"PHP", @"USD", @"CNY", @"HKD", @"TWD", @"EUR", @"GBP", @"JPY", @"SGD", @"KRW"]];
+    self.currencyBox.placeholderString = @"币种";
+    self.currencyBox.delegate = self;
+    self.currencyBox.target = self;
+    self.currencyBox.action = @selector(currencyChosen:);
+    NSStackView *priceRow = [NSStackView stackViewWithViews:@[self.priceField, self.currencyBox]];
+    priceRow.spacing = 8;
+    [self.priceField setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.currencyBox.widthAnchor constraintEqualToConstant:84].active = YES;
+    NSButton *syncButton = DeskButton(@"从账单页读取档位与月费", @"creditcard", self, @selector(readBilling:));
+    syncButton.toolTip = @"打开此账号 ChatGPT 的“设置 → 账单”，读取 Pro 档位、续订日期和最近一次扣款金额";
 
     // Client authorization
     self.authField = [NSTextField new];
@@ -198,14 +249,20 @@ static NSString *SourceName(NSString *source, id value) {
 
     NSArray<NSView *> *fullWidth = @[
         DeskSeparator(),
+        [self sectionTitle:@"用量"],
+        self.shortRow, self.longRow, self.usageLabel, refreshRow,
+        DeskSeparator(),
         [self sectionTitle:@"资料"],
         [self fieldWithCaption:@"名称" control:self.nameField],
         [self fieldWithCaption:@"邮箱" control:self.emailField],
         [self fieldWithCaption:@"分组" control:self.groupBox],
+        [self fieldWithCaption:@"标签" control:self.tagsField],
         DeskSeparator(),
         [self sectionTitle:@"订阅"],
         [self fieldWithCaption:@"级别" control:self.planPicker],
-        self.dateToggle, dateRow, self.sourceLabel, syncButton,
+        self.dateToggle, dateRow, self.autoRenewToggle,
+        [self fieldWithCaption:@"月费" control:priceRow],
+        self.sourceLabel, syncButton,
         DeskSeparator(),
         [self sectionTitle:@"客户端授权"],
         [self fieldWithCaption:@"授权链接" control:self.authField],
@@ -229,6 +286,8 @@ static NSString *SourceName(NSString *source, id value) {
     [header.widthAnchor constraintLessThanOrEqualToAnchor:stack.widthAnchor constant:-32].active = YES;
     [stack setCustomSpacing:10 afterView:header];
     [stack setCustomSpacing:4 afterView:self.dateToggle];
+    [stack setCustomSpacing:8 afterView:self.shortRow];
+    [stack setCustomSpacing:8 afterView:self.longRow];
     [stack setCustomSpacing:6 afterView:self.sourceLabel];
     [stack setCustomSpacing:6 afterView:authButton];
     [stack setCustomSpacing:6 afterView:sessionButton];
@@ -329,6 +388,31 @@ static NSString *SourceName(NSString *source, id value) {
     BOOL hasDefault = [NSUserDefaults.standardUserDefaults stringForKey:DefaultAuthorizationURLDefaultsKey].length > 0;
     self.authField.placeholderString = hasDefault ? @"未设置，使用默认授权链接" : @"未设置，打开时粘贴链接";
     if (![self isEditing:self.notesView]) self.notesView.string = account.notes;
+    if (![self isEditing:self.tagsField]) self.tagsField.objectValue = account.tags;
+    self.autoRenewToggle.state = account.autoRenew.boolValue ? NSControlStateValueOn : NSControlStateValueOff;
+    self.autoRenewToggle.enabled = hasDate;
+    if (![self isEditing:self.priceField]) self.priceField.objectValue = account.monthlyPrice;
+    if (![self isEditing:self.currencyBox]) self.currencyBox.stringValue = account.currency;
+
+    AccountUsage *usage = account.usage;
+    BOOL hasUsage = usage.windows.count > 0;
+    self.shortRow.hidden = !hasUsage;
+    self.longRow.hidden = !hasUsage;
+    if (hasUsage) {
+        [self.shortRow showWindow:usage.shortWindow ?: usage.windows.firstObject title:@"5 小时"];
+        [self.longRow showWindow:usage.longWindow title:@"每周"];
+    }
+    NSMutableArray *usageParts = [NSMutableArray array];
+    if (account.refreshError.length) [usageParts addObject:account.refreshError];
+    else if (!hasUsage) [usageParts addObject:@"尚未读取用量"];
+    if (usage.unlimitedCredits) [usageParts addObject:@"额度不限"];
+    else if (usage.creditBalance) [usageParts addObject:[@"额度余额 " stringByAppendingString:AccountFormatMoney(usage.creditBalance, nil)]];
+    if (usage) [usageParts addObject:[@"更新于" stringByAppendingString:DeskRelativeTime(usage.fetchedAt)]];
+    self.usageLabel.stringValue = [usageParts componentsJoinedByString:@" · "];
+    self.usageLabel.textColor = account.refreshError.length ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    BOOL refreshing = [self.coordinator isRefreshingAccountID:account.identifier];
+    self.refreshButton.enabled = !refreshing;
+    if (refreshing) [self.refreshSpinner startAnimation:nil]; else [self.refreshSpinner stopAnimation:nil];
 
     NSString *login = account.signedIn ? (account.signedIn.boolValue ? @"已登录" : @"未登录") : @"未检测";
     self.recordLabel.stringValue = [NSString stringWithFormat:@"创建时间　%@\n最近使用　%@\n登录状态　%@",
@@ -369,7 +453,51 @@ static NSString *SourceName(NSString *source, id value) {
         [self groupChosen:self.groupBox];
     } else if (field == self.authField) {
         [self authLinkEdited];
+    } else if (field == self.tagsField) {
+        NSArray *tags = AccountNormalizedTags(self.tagsField.objectValue);
+        if ([tags isEqualToArray:account.tags]) return;
+        account.tags = tags;
+        [self save];
+    } else if (field == self.priceField) {
+        NSNumber *price = [self.priceField.objectValue isKindOfClass:NSNumber.class] ? self.priceField.objectValue : nil;
+        if (price == account.monthlyPrice || [price isEqual:account.monthlyPrice]) return;
+        account.monthlyPrice = price;
+        [self save];
+    } else if (field == self.currencyBox) {
+        [self currencyChosen:self.currencyBox];
     }
+}
+
+- (void)currencyChosen:(id)sender {
+    Account *account = [self account];
+    if (!account) return;
+    NSString *before = account.currency;
+    account.currency = self.currencyBox.stringValue;
+    if (![before isEqualToString:account.currency]) [self save];
+}
+
+- (void)autoRenewToggled:(id)sender {
+    Account *account = [self account];
+    if (!account) return;
+    account.autoRenew = @(self.autoRenewToggle.state == NSControlStateValueOn);
+    [self save];
+}
+
+- (void)refreshUsage:(id)sender {
+    if (self.accountID) [self.coordinator refreshUsageForAccountIDs:@[self.accountID]];
+}
+
+- (void)readBilling:(id)sender {
+    [self commitPendingEdits];
+    if (self.accountID) [self.coordinator readBillingForAccountID:self.accountID];
+}
+
+- (NSArray *)tokenField:(NSTokenField *)tokenField completionsForSubstring:(NSString *)substring
+    indexOfToken:(NSInteger)tokenIndex indexOfSelectedItem:(NSInteger *)selectedIndex {
+    NSMutableArray *matches = [NSMutableArray array];
+    for (NSString *tag in self.coordinator.store.tags)
+        if (!substring.length || [tag localizedCaseInsensitiveContainsString:substring]) [matches addObject:tag];
+    return matches;
 }
 
 - (void)authLinkEdited {
@@ -421,6 +549,7 @@ static NSString *SourceName(NSString *source, id value) {
 - (void)setExpiry:(NSDate *)date onAccount:(Account *)account {
     account.expiresAt = date ? AccountDayString(date) : nil;
     account.expirySource = date ? @"manual" : nil;
+    if (!date) account.autoRenew = nil;
     [self save];
 }
 

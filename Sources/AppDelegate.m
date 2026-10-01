@@ -135,12 +135,16 @@
     [self add:@"重新载入页面" action:@selector(reloadPage:) key:@"r" modifiers:command to:account target:controller];
     [self add:@"ChatGPT 首页" action:@selector(goHome:) key:@"h" modifiers:command | shift to:account target:controller];
     [account addItem:[NSMenuItem separatorItem]];
+    [self add:@"刷新全部账号用量" action:@selector(refreshAllUsage:) key:@"r" modifiers:command | shift to:account target:controller];
+    [self add:@"刷新所选账号用量" action:@selector(refreshSelectedUsage:) key:nil modifiers:0 to:account target:controller];
+    [self add:@"从账单页读取档位与月费" action:@selector(readBillingForSelected:) key:nil modifiers:0 to:account target:controller];
     [self add:@"从当前页面读取订阅" action:@selector(syncSubscription:) key:nil modifiers:0 to:account target:controller];
     [self add:@"查看当前会话" action:@selector(showCurrentSession:) key:@"k" modifiers:command | shift to:account target:controller];
     [self add:@"打开授权链接…" action:@selector(openAuthorizationLink:) key:@"l" modifiers:command | shift to:account target:controller];
     [account addItem:[NSMenuItem separatorItem]];
     [self add:@"重命名…" action:@selector(renameSelectedAccount:) key:nil modifiers:0 to:account target:controller];
     [self add:@"移动到分组…" action:@selector(moveSelectedToGroup:) key:nil modifiers:0 to:account target:controller];
+    [self add:@"添加标签…" action:@selector(addTagsToSelected:) key:nil modifiers:0 to:account target:controller];
     [self add:@"清除登录数据…" action:@selector(clearSelectedLoginData:) key:nil modifiers:0 to:account target:controller];
     [self add:@"删除账号…" action:@selector(deleteSelectedAccounts:) key:nil modifiers:0 to:account target:controller];
 

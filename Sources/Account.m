@@ -5,7 +5,7 @@ NSErrorDomain const AccountStoreErrorDomain = @"AccountStoreErrorDomain";
 NSNotificationName const AccountStoreDidChangeNotification = @"AccountStoreDidChangeNotification";
 
 NSArray<NSString *> *AccountPlans(void) {
-    return @[@"Free", @"Go", @"Plus", @"Pro", @"Business", @"Enterprise", @"Edu"];
+    return @[@"Free", @"Go", @"Plus", @"Pro", @"Pro 100", @"Pro 200", @"Pro 500", @"Business", @"Enterprise", @"Edu"];
 }
 
 static NSString *Trimmed(NSString *value) {
@@ -16,11 +16,61 @@ static NSString *StringOrNil(id value) {
     return [value isKindOfClass:NSString.class] && [value length] ? value : nil;
 }
 
-NSString *AccountCanonicalPlan(id plan) {
-    NSString *value = Trimmed(StringOrNil(plan));
-    for (NSString *candidate in AccountPlans())
-        if ([candidate caseInsensitiveCompare:value] == NSOrderedSame) return candidate;
+static NSNumber *NumberOrNil(id value) {
+    if ([value isKindOfClass:NSNumber.class]) return value;
+    if ([value isKindOfClass:NSString.class] && [value length]) {
+        NSString *digits = [value stringByReplacingOccurrencesOfString:@"," withString:@""];
+        NSScanner *scanner = [NSScanner scannerWithString:digits];
+        double number = 0;
+        if ([scanner scanDouble:&number] && scanner.isAtEnd) return @(number);
+    }
     return nil;
+}
+
+NSString *AccountCanonicalPlan(id plan) {
+    // "ChatGPT Pro 200", "pro200", "PRO" and "team" all map onto the display names.
+    NSString *key = [[Trimmed(StringOrNil(plan)) lowercaseString] stringByReplacingOccurrencesOfString:@" " withString:@""];
+    if ([key hasPrefix:@"chatgpt"]) key = [key substringFromIndex:7];
+    if (!key.length) return nil;
+    NSDictionary *aliases = @{@"team": @"Business", @"education": @"Edu"};
+    if (aliases[key]) return aliases[key];
+    for (NSString *candidate in AccountPlans()) {
+        NSString *compact = [candidate.lowercaseString stringByReplacingOccurrencesOfString:@" " withString:@""];
+        if ([compact isEqualToString:key]) return candidate;
+    }
+    return nil;
+}
+
+NSString *AccountPlanFamily(NSString *plan) {
+    return [plan hasPrefix:@"Pro"] ? @"Pro" : plan;
+}
+
+NSArray<NSString *> *AccountNormalizedTags(id tags) {
+    NSMutableOrderedSet<NSString *> *result = [NSMutableOrderedSet orderedSet];
+    if ([tags isKindOfClass:NSArray.class]) {
+        for (id tag in tags) {
+            NSString *value = Trimmed(StringOrNil(tag));
+            if (value.length) [result addObject:value];
+        }
+    }
+    return result.array;
+}
+
+NSString *AccountFormatMoney(NSNumber *amount, NSString *currency) {
+    if (!amount) return @"";
+    static NSNumberFormatter *formatter;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        formatter = [NSNumberFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.numberStyle = NSNumberFormatterDecimalStyle;
+        formatter.usesGroupingSeparator = YES;
+        formatter.groupingSeparator = @",";
+        formatter.minimumFractionDigits = 0;
+        formatter.maximumFractionDigits = 2;
+    });
+    NSString *value = [formatter stringFromNumber:amount] ?: amount.stringValue;
+    return currency.length ? [NSString stringWithFormat:@"%@ %@", currency, value] : value;
 }
 
 static NSDateFormatter *DayFormatter(void) {
@@ -53,9 +103,107 @@ NSDate *AccountDateFromDayString(NSString *day) {
     return day.length ? [DayFormatter() dateFromString:day] : nil;
 }
 
+#pragma mark - Usage
+
+@implementation AccountUsageWindow
+
+- (instancetype)initWithDictionary:(NSDictionary *)dictionary {
+    NSNumber *used = NumberOrNil(dictionary[@"usedPercent"]);
+    NSNumber *seconds = NumberOrNil(dictionary[@"windowSeconds"]);
+    if (!used || seconds.integerValue <= 0) return nil;
+    if ((self = [super init])) {
+        _usedPercent = MAX(0, MIN(100, used.doubleValue));
+        _windowSeconds = seconds.integerValue;
+        _resetAt = TimestampOrNil(dictionary[@"resetAt"]);
+    }
+    return self;
+}
+
+- (NSDictionary *)dictionaryRepresentation {
+    NSMutableDictionary *dictionary = [@{@"usedPercent": @(self.usedPercent), @"windowSeconds": @(self.windowSeconds)} mutableCopy];
+    if (self.resetAt) dictionary[@"resetAt"] = [TimestampFormatter() stringFromDate:self.resetAt];
+    return dictionary;
+}
+
+- (double)remainingPercent { return MAX(0, 100 - self.usedPercent); }
+
+- (NSString *)title {
+    NSInteger seconds = self.windowSeconds;
+    if (seconds == 7 * 86400) return @"每周";
+    if (seconds % 86400 == 0) return [NSString stringWithFormat:@"%ld 天", (long)(seconds / 86400)];
+    if (seconds % 3600 == 0) return [NSString stringWithFormat:@"%ld 小时", (long)(seconds / 3600)];
+    return [NSString stringWithFormat:@"%ld 分钟", (long)MAX(1, seconds / 60)];
+}
+@end
+
+@implementation AccountUsage
+
+- (instancetype)init {
+    if ((self = [super init])) {
+        _windows = @[];
+        _fetchedAt = NSDate.date;
+    }
+    return self;
+}
+
+- (instancetype)initWithDictionary:(NSDictionary *)dictionary {
+    if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
+    if ((self = [self init])) {
+        NSMutableArray *windows = [NSMutableArray array];
+        id items = dictionary[@"windows"];
+        if ([items isKindOfClass:NSArray.class]) {
+            for (id item in items) {
+                AccountUsageWindow *window = [item isKindOfClass:NSDictionary.class] ? [[AccountUsageWindow alloc] initWithDictionary:item] : nil;
+                if (window) [windows addObject:window];
+            }
+        }
+        self.windows = windows;
+        _creditBalance = NumberOrNil(dictionary[@"creditBalance"]);
+        _unlimitedCredits = [dictionary[@"unlimitedCredits"] boolValue];
+        _fetchedAt = TimestampOrNil(dictionary[@"fetchedAt"]) ?: NSDate.distantPast;
+    }
+    return self;
+}
+
+- (void)setWindows:(NSArray<AccountUsageWindow *> *)windows {
+    _windows = [windows sortedArrayUsingComparator:^NSComparisonResult(AccountUsageWindow *a, AccountUsageWindow *b) {
+        return [@(a.windowSeconds) compare:@(b.windowSeconds)];
+    }];
+}
+
+- (NSDictionary *)dictionaryRepresentation {
+    NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+    dictionary[@"windows"] = [self.windows valueForKey:@"dictionaryRepresentation"];
+    if (self.creditBalance) dictionary[@"creditBalance"] = self.creditBalance;
+    if (self.unlimitedCredits) dictionary[@"unlimitedCredits"] = @YES;
+    dictionary[@"fetchedAt"] = [TimestampFormatter() stringFromDate:self.fetchedAt];
+    return dictionary;
+}
+
+- (AccountUsageWindow *)shortWindow {
+    AccountUsageWindow *first = self.windows.firstObject;
+    return first.windowSeconds <= 86400 ? first : nil;
+}
+
+- (AccountUsageWindow *)longWindow {
+    AccountUsageWindow *last = self.windows.lastObject;
+    return last.windowSeconds > 86400 ? last : nil;
+}
+
+- (NSNumber *)lowestRemainingPercent {
+    NSNumber *lowest = nil;
+    for (AccountUsageWindow *window in self.windows)
+        if (!lowest || window.remainingPercent < lowest.doubleValue) lowest = @(window.remainingPercent);
+    return lowest;
+}
+@end
+
+#pragma mark - Account
+
 static NSArray<NSString *> *KnownKeys(void) {
-    return @[@"id", @"name", @"email", @"plan", @"planSource", @"expiresAt", @"expirySource",
-             @"group", @"notes", @"authURL", @"createdAt", @"lastUsedAt", @"signedIn"];
+    return @[@"id", @"name", @"email", @"plan", @"planSource", @"expiresAt", @"expirySource", @"autoRenew",
+             @"monthlyPrice", @"currency", @"group", @"tags", @"notes", @"authURL", @"createdAt", @"lastUsedAt",
+             @"signedIn", @"usage"];
 }
 
 @implementation Account {
@@ -82,13 +230,19 @@ static NSArray<NSString *> *KnownKeys(void) {
         NSDate *expiry = AccountDateFromDayString(StringOrNil(dictionary[@"expiresAt"]));
         _expiresAt = expiry ? AccountDayString(expiry) : nil;
         _expirySource = _expiresAt ? StringOrNil(dictionary[@"expirySource"]) : nil;
+        id autoRenew = dictionary[@"autoRenew"];
+        _autoRenew = [autoRenew isKindOfClass:NSNumber.class] ? @([autoRenew boolValue]) : nil;
+        _monthlyPrice = NumberOrNil(dictionary[@"monthlyPrice"]);
+        _currency = Trimmed(StringOrNil(dictionary[@"currency"])).uppercaseString;
         _group = Trimmed(StringOrNil(dictionary[@"group"]));
+        _tags = AccountNormalizedTags(dictionary[@"tags"]);
         _notes = StringOrNil(dictionary[@"notes"]) ?: @"";
         _authURL = Trimmed(StringOrNil(dictionary[@"authURL"]));
         _createdAt = TimestampOrNil(dictionary[@"createdAt"]);
         _lastUsedAt = TimestampOrNil(dictionary[@"lastUsedAt"]);
         id signedIn = dictionary[@"signedIn"];
         _signedIn = [signedIn isKindOfClass:NSNumber.class] ? @([signedIn boolValue]) : nil;
+        _usage = [dictionary[@"usage"] isKindOfClass:NSDictionary.class] ? [[AccountUsage alloc] initWithDictionary:dictionary[@"usage"]] : nil;
         NSMutableDictionary *extras = [dictionary mutableCopy];
         [extras removeObjectsForKeys:KnownKeys()];
         _extras = [extras copy];
@@ -100,6 +254,8 @@ static NSArray<NSString *> *KnownKeys(void) {
 - (void)setGroup:(NSString *)group { _group = [Trimmed(group) copy]; }
 - (void)setNotes:(NSString *)notes { _notes = [notes ?: @"" copy]; }
 - (void)setAuthURL:(NSString *)authURL { _authURL = [Trimmed(authURL) copy]; }
+- (void)setCurrency:(NSString *)currency { _currency = [Trimmed(currency).uppercaseString copy]; }
+- (void)setTags:(NSArray<NSString *> *)tags { _tags = AccountNormalizedTags(tags); }
 
 - (NSDictionary *)dictionaryRepresentation {
     NSMutableDictionary *dictionary = [_extras mutableCopy] ?: [NSMutableDictionary dictionary];
@@ -114,19 +270,24 @@ static NSArray<NSString *> *KnownKeys(void) {
         dictionary[@"expiresAt"] = self.expiresAt;
         if (self.expirySource) dictionary[@"expirySource"] = self.expirySource;
     }
+    if (self.autoRenew) dictionary[@"autoRenew"] = self.autoRenew;
+    if (self.monthlyPrice) dictionary[@"monthlyPrice"] = self.monthlyPrice;
+    if (self.currency.length) dictionary[@"currency"] = self.currency;
     if (self.group.length) dictionary[@"group"] = self.group;
+    if (self.tags.count) dictionary[@"tags"] = self.tags;
     if (self.notes.length) dictionary[@"notes"] = self.notes;
     if (self.authURL.length) dictionary[@"authURL"] = self.authURL;
     if (self.createdAt) dictionary[@"createdAt"] = [TimestampFormatter() stringFromDate:self.createdAt];
     if (self.lastUsedAt) dictionary[@"lastUsedAt"] = [TimestampFormatter() stringFromDate:self.lastUsedAt];
     if (self.signedIn) dictionary[@"signedIn"] = self.signedIn;
+    if (self.usage) dictionary[@"usage"] = self.usage.dictionaryRepresentation;
     return dictionary;
 }
 
 - (NSDictionary *)exportRepresentation {
-    // Login state and usage time describe this Mac, not the account.
+    // Login state, usage and usage time describe this Mac's session, not the account.
     NSMutableDictionary *dictionary = [[self dictionaryRepresentation] mutableCopy];
-    [dictionary removeObjectsForKeys:@[@"lastUsedAt", @"signedIn"]];
+    [dictionary removeObjectsForKeys:@[@"lastUsedAt", @"signedIn", @"usage"]];
     return dictionary;
 }
 
@@ -135,14 +296,29 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (other.email.length) self.email = other.email;
     if (other.plan) { self.plan = other.plan; self.planSource = other.planSource; }
     if (other.expiresAt) { self.expiresAt = other.expiresAt; self.expirySource = other.expirySource; }
+    if (other.autoRenew) self.autoRenew = other.autoRenew;
+    if (other.monthlyPrice) { self.monthlyPrice = other.monthlyPrice; self.currency = other.currency; }
     if (other.group.length) self.group = other.group;
+    if (other.tags.count) self.tags = [self.tags arrayByAddingObjectsFromArray:other.tags];
     if (other.notes.length) self.notes = other.notes;
     if (other.authURL.length) self.authURL = other.authURL;
     if (other.createdAt && (!self.createdAt || [other.createdAt compare:self.createdAt] == NSOrderedAscending))
         self.createdAt = other.createdAt;
 }
 
+- (BOOL)applyDetectedPlan:(NSString *)plan source:(NSString *)source {
+    NSString *canonical = AccountCanonicalPlan(plan);
+    if (!canonical) return NO;
+    // Usage and session APIs only say "pro"; the tier comes from the billing page.
+    if ([canonical isEqualToString:@"Pro"] && [self.plan hasPrefix:@"Pro "]) canonical = self.plan;
+    if ([canonical isEqualToString:self.plan] && [source isEqualToString:self.planSource]) return NO;
+    self.plan = canonical;
+    self.planSource = source;
+    return YES;
+}
+
 - (NSString *)planTitle { return self.plan ?: @"未获取"; }
+- (NSString *)planFamily { return AccountPlanFamily(self.plan); }
 - (BOOL)isPaid { return self.plan && ![self.plan isEqualToString:@"Free"]; }
 - (NSInteger)planRank { return self.plan ? (NSInteger)[AccountPlans() indexOfObject:self.plan] + 1 : 0; }
 
@@ -158,6 +334,7 @@ static NSArray<NSString *> *KnownKeys(void) {
 - (AccountExpiryState)expiryStateFromDate:(NSDate *)now {
     NSNumber *days = [self daysRemainingFromDate:now];
     if (!days) return AccountExpiryStateUnknown;
+    if (self.autoRenew.boolValue) return AccountExpiryStateRenewing;
     if (days.integerValue < 0) return AccountExpiryStateExpired;
     if (days.integerValue <= AccountExpiringSoonDays) return AccountExpiryStateExpiringSoon;
     return AccountExpiryStateActive;
@@ -167,15 +344,44 @@ static NSArray<NSString *> *KnownKeys(void) {
     NSNumber *days = [self daysRemainingFromDate:now];
     if (!days) return @"未设置到期";
     NSInteger value = days.integerValue;
+    if (self.autoRenew.boolValue) {
+        if (value < 0) return @"续费日已过，待刷新";
+        if (value == 0) return @"今天续费";
+        return [NSString stringWithFormat:@"%ld 天后续费", (long)value];
+    }
     if (value < 0) return [NSString stringWithFormat:@"已过期 %ld 天", (long)-value];
     if (value == 0) return @"今天到期";
     return [NSString stringWithFormat:@"剩余 %ld 天", (long)value];
 }
 
+- (NSString *)renewalDescription {
+    NSDate *date = AccountDateFromDayString(self.expiresAt);
+    if (!date) return @"未设置到期";
+    NSDateComponents *parts = [NSCalendar.currentCalendar components:NSCalendarUnitMonth | NSCalendarUnitDay fromDate:date];
+    return [NSString stringWithFormat:@"%ld月%ld日%@", (long)parts.month, (long)parts.day,
+        self.autoRenew.boolValue ? @"自动续费" : @"到期"];
+}
+
+- (NSString *)compactRenewalDescriptionFromDate:(NSDate *)now {
+    NSDate *date = AccountDateFromDayString(self.expiresAt);
+    NSNumber *days = [self daysRemainingFromDate:now];
+    if (!date || !days) return @"";
+    NSDateComponents *parts = [NSCalendar.currentCalendar components:NSCalendarUnitMonth | NSCalendarUnitDay fromDate:date];
+    NSString *day = [NSString stringWithFormat:@"%ld/%ld", (long)parts.month, (long)parts.day];
+    NSInteger value = days.integerValue;
+    if (self.autoRenew.boolValue) {
+        if (value < 0) return [day stringByAppendingString:@" 续费 · 待刷新"];
+        return value == 0 ? @"今天续费" : [NSString stringWithFormat:@"%@ 续费 · %ld 天", day, (long)value];
+    }
+    if (value < 0) return [day stringByAppendingString:@" 已过期"];
+    return value == 0 ? @"今天到期" : [NSString stringWithFormat:@"%@ 到期 · %ld 天", day, (long)value];
+}
+
 - (BOOL)matchesSearch:(NSString *)query {
     NSString *needle = Trimmed(query);
     if (!needle.length) return YES;
-    for (NSString *field in @[self.name, self.email, self.group, self.notes, self.plan ?: @""])
+    NSArray *fields = [@[self.name, self.email, self.group, self.notes, self.plan ?: @""] arrayByAddingObjectsFromArray:self.tags];
+    for (NSString *field in fields)
         if ([field localizedCaseInsensitiveContainsString:needle]) return YES;
     return NO;
 }
@@ -304,6 +510,22 @@ static NSArray *AccountItemsFromJSON(NSData *data, NSError **error) {
     NSMutableOrderedSet *groups = [NSMutableOrderedSet orderedSet];
     for (Account *account in _accounts) if (account.group.length) [groups addObject:account.group];
     return [groups.array sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+}
+
+- (NSArray<NSString *> *)tags {
+    NSMutableOrderedSet *tags = [NSMutableOrderedSet orderedSet];
+    for (Account *account in _accounts) [tags addObjectsFromArray:account.tags];
+    return [tags.array sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)monthlySpendByCurrency {
+    NSMutableDictionary<NSString *, NSNumber *> *totals = [NSMutableDictionary dictionary];
+    for (Account *account in _accounts) {
+        if (!account.isPaid || !account.monthlyPrice) continue;
+        NSString *currency = account.currency.length ? account.currency : @"";
+        totals[currency] = @(totals[currency].doubleValue + account.monthlyPrice.doubleValue);
+    }
+    return totals;
 }
 
 - (NSData *)exportDataForAccountIDs:(NSArray<NSString *> *)identifiers error:(NSError **)error {

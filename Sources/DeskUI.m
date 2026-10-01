@@ -76,17 +76,42 @@ NSColor *DeskColorForPlan(NSString *plan) {
         @"Enterprise": NSColor.systemIndigoColor,
         @"Edu": NSColor.systemOrangeColor
     };
-    return (plan ? colors[plan] : nil) ?: NSColor.systemGrayColor;
+    NSString *family = AccountPlanFamily(plan);
+    return (family ? colors[family] : nil) ?: NSColor.systemGrayColor;
 }
 
 NSColor *DeskColorForExpiry(AccountExpiryState state) {
     switch (state) {
         case AccountExpiryStateExpired: return NSColor.systemRedColor;
         case AccountExpiryStateExpiringSoon: return NSColor.systemOrangeColor;
-        case AccountExpiryStateActive: return NSColor.systemBlueColor;
+        case AccountExpiryStateActive: return NSColor.systemGreenColor;
+        case AccountExpiryStateRenewing: return NSColor.systemBlueColor;
         case AccountExpiryStateUnknown: return NSColor.systemGrayColor;
     }
     return NSColor.systemGrayColor;
+}
+
+NSColor *DeskColorForQuota(double remainingPercent) {
+    if (remainingPercent < 20) return NSColor.systemRedColor;
+    if (remainingPercent < 50) return NSColor.systemOrangeColor;
+    return NSColor.systemGreenColor;
+}
+
+NSColor *DeskColorForTag(NSString *tag) { return DeskColorForSeed([@"tag:" stringByAppendingString:tag ?: @""]); }
+
+NSString *DeskResetDescription(NSDate *resetAt) {
+    if (!resetAt) return @"";
+    NSTimeInterval seconds = resetAt.timeIntervalSinceNow;
+    if (seconds <= 60) return @"即将重置";
+    if (seconds < 3600) return [NSString stringWithFormat:@"%ld 分钟后重置", (long)ceil(seconds / 60)];
+    if (seconds < 86400) {
+        long hours = (long)(seconds / 3600), minutes = (long)fmod(seconds, 3600) / 60;
+        return minutes ? [NSString stringWithFormat:@"%ld 小时 %ld 分后重置", hours, minutes]
+                       : [NSString stringWithFormat:@"%ld 小时后重置", hours];
+    }
+    long days = (long)(seconds / 86400), hours = (long)fmod(seconds, 86400) / 3600;
+    return hours ? [NSString stringWithFormat:@"%ld 天 %ld 小时后重置", days, hours]
+                 : [NSString stringWithFormat:@"%ld 天后重置", days];
 }
 
 NSString *DeskRelativeTime(NSDate *date) {
@@ -213,6 +238,94 @@ static NSFont *PillFont(void) { return [NSFont systemFontOfSize:10.5 weight:NSFo
     NSSize size = [self.text sizeWithAttributes:attributes];
     [self.text drawAtPoint:NSMakePoint(round((NSWidth(self.bounds) - size.width) / 2),
         round((NSHeight(self.bounds) - size.height) / 2)) withAttributes:attributes];
+}
+@end
+
+@implementation DeskQuotaBar
+- (instancetype)initWithFrame:(NSRect)frame {
+    if ((self = [super initWithFrame:frame])) self.translatesAutoresizingMaskIntoConstraints = NO;
+    return self;
+}
+- (void)setRemainingPercent:(NSNumber *)remainingPercent { _remainingPercent = remainingPercent; [self setNeedsDisplay:YES]; }
+- (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, 6); }
+- (void)drawRect:(NSRect)dirtyRect {
+    CGFloat radius = NSHeight(self.bounds) / 2;
+    [[NSColor.labelColor colorWithAlphaComponent:0.08] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:radius yRadius:radius] fill];
+    if (!self.remainingPercent) return;
+    double value = MAX(0, MIN(100, self.remainingPercent.doubleValue));
+    NSRect fill = self.bounds;
+    fill.size.width = MAX(value > 0 ? NSHeight(fill) : 0, round(NSWidth(fill) * value / 100));
+    [DeskColorForQuota(value) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:radius yRadius:radius] fill];
+}
+@end
+
+@implementation DeskTagsView
+static NSFont *TagFont(void) { return [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium]; }
+- (instancetype)initWithFrame:(NSRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        _tags = @[];
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+        [self setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
+    return self;
+}
+- (void)setTags:(NSArray<NSString *> *)tags {
+    _tags = [tags copy] ?: @[];
+    self.toolTip = _tags.count ? [_tags componentsJoinedByString:@"、"] : nil;
+    [self invalidateIntrinsicContentSize];
+    [self setNeedsDisplay:YES];
+}
+- (void)setBackgroundStyle:(NSBackgroundStyle)backgroundStyle { _backgroundStyle = backgroundStyle; [self setNeedsDisplay:YES]; }
+- (CGFloat)widthOfTag:(NSString *)tag {
+    return ceil([tag sizeWithAttributes:@{NSFontAttributeName: TagFont()}].width) + 12;
+}
+- (NSSize)intrinsicContentSize {
+    if (!self.tags.count) return NSMakeSize(0, 0);
+    CGFloat width = 0;
+    for (NSString *tag in self.tags) width += [self widthOfTag:tag] + 4;
+    return NSMakeSize(width, 17);
+}
+- (void)drawChip:(NSString *)text atX:(CGFloat)x width:(CGFloat)width tint:(NSColor *)tint {
+    BOOL emphasized = self.backgroundStyle == NSBackgroundStyleEmphasized;
+    if (emphasized) tint = NSColor.whiteColor;
+    CGFloat height = MIN(17, NSHeight(self.bounds));
+    NSRect chip = NSMakeRect(x, round((NSHeight(self.bounds) - height) / 2), width, height);
+    [[tint colorWithAlphaComponent:emphasized ? 0.25 : 0.15] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:chip xRadius:4 yRadius:4] fill];
+    NSMutableParagraphStyle *style = [NSMutableParagraphStyle new];
+    style.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *attributes = @{NSFontAttributeName: TagFont(), NSForegroundColorAttributeName: tint, NSParagraphStyleAttributeName: style};
+    CGFloat textHeight = [text sizeWithAttributes:attributes].height;
+    [text drawInRect:NSMakeRect(x + 6, NSMinY(chip) + round((height - textHeight) / 2), width - 12, textHeight) withAttributes:attributes];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    CGFloat x = 0, limit = NSWidth(self.bounds);
+    NSUInteger count = self.tags.count;
+    for (NSUInteger index = 0; index < count; index++) {
+        NSString *tag = self.tags[index];
+        CGFloat width = [self widthOfTag:tag];
+        NSUInteger after = count - index - 1;
+        CGFloat reserve = after ? [self widthOfTag:[NSString stringWithFormat:@"+%lu", (unsigned long)after]] + 4 : 0;
+        if (x + width + reserve > limit) {
+            CGFloat available = limit - x - reserve;
+            if (index == 0 && available >= 30) {
+                // Always show the first tag, shortened, before the "+N".
+                [self drawChip:tag atX:x width:available tint:DeskColorForTag(tag)];
+                if (after) [self drawChip:[NSString stringWithFormat:@"+%lu", (unsigned long)after] atX:x + available + 4
+                    width:reserve - 4 tint:NSColor.secondaryLabelColor];
+            } else {
+                NSString *rest = [NSString stringWithFormat:@"+%lu", (unsigned long)(count - index)];
+                CGFloat restWidth = [self widthOfTag:rest];
+                if (x + restWidth <= limit) [self drawChip:rest atX:x width:restWidth tint:NSColor.secondaryLabelColor];
+            }
+            return;
+        }
+        [self drawChip:tag atX:x width:width tint:DeskColorForTag(tag)];
+        x += width + 4;
+    }
 }
 @end
 

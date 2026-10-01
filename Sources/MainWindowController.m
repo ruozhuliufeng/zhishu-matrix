@@ -2,6 +2,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "Account.h"
 #import "AccountInspectorController.h"
+#import "AccountRefresher.h"
 #import "AccountSidebarController.h"
 #import "AuthorizationLink.h"
 #import "AuthorizationWindowController.h"
@@ -17,6 +18,7 @@ static NSToolbarItemIdentifier const ToolbarReload = @"reload";
 static NSToolbarItemIdentifier const ToolbarHome = @"home";
 static NSToolbarItemIdentifier const ToolbarSession = @"session";
 static NSToolbarItemIdentifier const ToolbarAuthorize = @"authorize";
+static NSToolbarItemIdentifier const ToolbarRefreshUsage = @"refreshUsage";
 static NSToolbarItemIdentifier const ToolbarMode = @"mode";
 static NSToolbarItemIdentifier const ToolbarAdd = @"add";
 
@@ -62,7 +64,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 }
 @end
 
-@interface MainWindowController () <NSToolbarDelegate, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation>
+@interface MainWindowController () <NSToolbarDelegate, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, NSTokenFieldDelegate>
 @property (nonatomic, strong, readwrite) AccountStore *store;
 @property (nonatomic, copy, readwrite, nullable) NSString *selectedAccountID;
 @property (nonatomic, readwrite) DeskMode mode;
@@ -79,6 +81,11 @@ static BOOL IsChatGPTPage(NSURL *url) {
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *probeTokens;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *scripts;
 @property (nonatomic, strong) NSMutableArray<AuthorizationWindowController *> *authorizationWindows;
+@property (nonatomic, strong) AccountRefresher *refresher;
+@property (nonatomic, strong, nullable) NSTimer *usageTimer;
+/// When automatic refresh last tried each account, so failing accounts are not retried every minute.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *usageAttempts;
+@property (nonatomic) NSUInteger billingReadToken;
 @property (nonatomic) NSUInteger nextProbeToken;
 @end
 
@@ -95,6 +102,14 @@ static BOOL IsChatGPTPage(NSURL *url) {
         _probeTokens = [NSMutableDictionary dictionary];
         _scripts = [NSMutableDictionary dictionary];
         _authorizationWindows = [NSMutableArray array];
+        _usageAttempts = [NSMutableDictionary dictionary];
+        _refresher = [[AccountRefresher alloc] initWithStore:store];
+        __weak typeof(self) weakRefresherSelf = self;
+        _refresher.dataStoreProvider = ^WKWebsiteDataStore *(NSString *identifier) {
+            WKWebsiteDataStore *loaded = weakRefresherSelf.sessions[identifier].webView.configuration.websiteDataStore;
+            return loaded ?: [WKWebsiteDataStore dataStoreForIdentifier:[[NSUUID alloc] initWithUUIDString:identifier]];
+        };
+        _refresher.stateChanged = ^{ [weakRefresherSelf refresherStateChanged]; };
         __weak typeof(self) weakSelf = self;
         store.saveFailed = ^(NSError *error) {
             [weakSelf showError:@"无法保存账号列表" detail:error.localizedDescription];
@@ -110,6 +125,12 @@ static BOOL IsChatGPTPage(NSURL *url) {
             name:NSCalendarDayChangedNotification object:nil];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userAgentPreferenceDidChange:)
             name:BrowserUserAgentPreferenceDidChangeNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scheduleUsageRefresh)
+            name:UsageRefreshSettingsDidChangeNotification object:nil];
+        [self scheduleUsageRefresh];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakRefresherSelf refreshStaleUsage];
+        });
         [self applyMode];
         [self updateDockBadge];
     }
@@ -411,48 +432,181 @@ static BOOL IsChatGPTPage(NSURL *url) {
 }
 
 - (void)readSubscriptionForAccountID:(NSString *)identifier reportFailure:(BOOL)reportFailure {
+    __weak typeof(self) weakSelf = self;
+    [self evaluatePlanProbeForAccountID:identifier completion:^(NSDictionary *page, NSString *failure) {
+        MainWindowController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (failure) {
+            if (reportFailure) [strongSelf showError:@"无法读取订阅信息" detail:failure];
+            return;
+        }
+        if (![strongSelf applyPageReading:page toAccountID:identifier] && reportFailure)
+            [strongSelf showError:@"未识别到订阅信息"
+                detail:@"当前页面没有可识别的套餐或到期日期。可使用“从账单页读取”，或在右侧手动填写。"];
+    }];
+}
+
+- (void)evaluatePlanProbeForAccountID:(NSString *)identifier completion:(void (^)(NSDictionary *page, NSString *failure))completion {
     WKWebView *webView = self.sessions[identifier].webView;
     if (!webView || !IsChatGPTPage(webView.URL)) {
-        if (reportFailure) [self showError:@"无法读取订阅信息" detail:@"请先在“浏览”中打开此账号的 ChatGPT 页面，等待加载完成后重试。"];
+        completion(nil, @"请先在“浏览”中打开此账号的 ChatGPT 页面，等待加载完成后重试。");
         return;
     }
     NSString *script = [self scriptNamed:@"PlanProbe"];
     if (!script) {
-        if (reportFailure) [self showError:@"无法读取订阅信息" detail:@"应用缺少页面识别资源，请重新构建应用。"];
+        completion(nil, @"应用缺少页面识别资源，请重新构建应用。");
         return;
     }
     __weak typeof(self) weakSelf = self;
     [webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        if (!weakSelf.sessions[identifier]) return;
+        completion([result isKindOfClass:NSDictionary.class] ? result : @{}, error.localizedDescription);
+    }];
+}
+
+/// Applies what PlanProbe.js read from the page. Returns whether anything was recognised.
+- (BOOL)applyPageReading:(NSDictionary *)page toAccountID:(NSString *)identifier {
+    Account *account = [self.store accountWithID:identifier];
+    NSString *profile = [page[@"profile"] isKindOfClass:NSString.class] ? page[@"profile"] : @"";
+    NSString *details = [page[@"details"] isKindOfClass:NSString.class] ? page[@"details"] : @"";
+    BOOL billing = [SubscriptionParser isBillingText:details];
+    NSString *plan = [SubscriptionParser planFromProfile:profile details:details];
+    NSDictionary *renewal = [SubscriptionParser renewalFromBillingText:details];
+    NSString *date = renewal[@"date"] ?: [SubscriptionParser expiryFromDetails:details];
+    NSDictionary *price = billing ? [SubscriptionParser priceFromBillingText:details] : nil;
+    if (!account || (!plan && !date && !price)) return NO;
+    BOOL changed = [account applyDetectedPlan:plan source:@"page"];
+    if (date && (![account.expiresAt isEqualToString:date] || ![account.expirySource isEqualToString:@"page"])) {
+        account.expiresAt = date;
+        account.expirySource = @"page";
+        changed = YES;
+    }
+    if (renewal[@"autoRenew"] && ![account.autoRenew isEqual:renewal[@"autoRenew"]]) {
+        account.autoRenew = renewal[@"autoRenew"];
+        changed = YES;
+    }
+    if (price && (![account.monthlyPrice isEqual:price[@"amount"]] || ![account.currency isEqualToString:price[@"currency"]])) {
+        account.monthlyPrice = price[@"amount"];
+        account.currency = price[@"currency"];
+        changed = YES;
+    }
+    if (changed) [self.store commit];
+    return YES;
+}
+
+- (void)readBillingForAccountID:(NSString *)identifier {
+    if (![self.store accountWithID:identifier]) return;
+    [self selectAccountID:identifier];
+    [self switchToMode:DeskModeBrowser];
+    BrowserSession *session = [self sessionForAccountID:identifier];
+    if (self.browser.session != session) [self.browser showSession:session];
+    WKWebView *webView = session.webView;
+    if (IsChatGPTPage(webView.URL) && !webView.loading)
+        [webView evaluateJavaScript:@"location.hash = '#settings/Billing'" completionHandler:nil];
+    else
+        [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"https://chatgpt.com/#settings/Billing"]]];
+    [self readBillingForAccountID:identifier attempt:0 token:++self.billingReadToken];
+}
+
+- (void)readBillingForAccountID:(NSString *)identifier attempt:(NSUInteger)attempt token:(NSUInteger)token {
+    NSArray<NSNumber *> *delays = @[@2.5, @2.5, @3, @4];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[attempt].doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         MainWindowController *strongSelf = weakSelf;
-        if (!strongSelf || !strongSelf.sessions[identifier]) return;
-        if (error) {
-            if (reportFailure) [strongSelf showError:@"未获取到订阅信息" detail:error.localizedDescription];
-            return;
-        }
-        NSDictionary *page = [result isKindOfClass:NSDictionary.class] ? result : nil;
-        NSString *profile = [page[@"profile"] isKindOfClass:NSString.class] ? page[@"profile"] : @"";
-        NSString *details = [page[@"details"] isKindOfClass:NSString.class] ? page[@"details"] : @"";
-        NSString *plan = [SubscriptionParser planFromProfile:profile details:details];
-        NSString *date = [SubscriptionParser expiryFromDetails:details];
-        if (!plan && !date) {
-            if (reportFailure) [strongSelf showError:@"未识别到订阅信息"
-                detail:@"当前页面没有可识别的套餐或到期日期。可在 ChatGPT 的账号设置中打开订阅详情后重试，或在右侧手动填写。"];
-            return;
-        }
-        Account *account = [strongSelf.store accountWithID:identifier];
-        if (!account) return;
-        BOOL changed = NO;
-        if (plan && (![account.plan isEqualToString:plan] || ![account.planSource isEqualToString:@"page"])) {
-            account.plan = plan;
-            account.planSource = @"page";
-            changed = YES;
-        }
-        if (date && (![account.expiresAt isEqualToString:date] || ![account.expirySource isEqualToString:@"page"])) {
-            account.expiresAt = date;
-            account.expirySource = @"page";
-            changed = YES;
-        }
-        if (changed) [strongSelf.store commit];
+        if (!strongSelf || strongSelf.billingReadToken != token) return;
+        [strongSelf evaluatePlanProbeForAccountID:identifier completion:^(NSDictionary *page, NSString *failure) {
+            NSString *details = [page[@"details"] isKindOfClass:NSString.class] ? page[@"details"] : @"";
+            if (!failure && [SubscriptionParser isBillingText:details] && [weakSelf applyPageReading:page toAccountID:identifier]) return;
+            if (attempt + 1 < delays.count) {
+                [weakSelf readBillingForAccountID:identifier attempt:attempt + 1 token:token];
+                return;
+            }
+            [weakSelf showError:@"未能读取账单页"
+                detail:failure ?: @"请确认此账号已登录，并在 ChatGPT 的“设置 → 账单”中能看到套餐和交易记录，然后重试。"];
+        }];
+    });
+}
+
+#pragma mark - Usage refresh
+
+- (BOOL)isRefreshingUsage { return self.refresher.isRefreshing; }
+- (BOOL)isRefreshingAccountID:(NSString *)identifier { return [self.refresher isRefreshingAccountID:identifier]; }
+
+- (void)refreshUsageForAccountIDs:(NSArray<NSString *> *)identifiers {
+    if (identifiers.count) [self.refresher refreshAccountIDs:identifiers];
+}
+
+- (void)refreshAllUsage:(id)sender { [self refreshUsageForAccountIDs:[self.store.accounts valueForKey:@"identifier"]]; }
+- (void)refreshSelectedUsage:(id)sender { [self refreshUsageForAccountIDs:[self targetAccountIDs]]; }
+
+- (void)refresherStateChanged {
+    [self.management reloadAccounts];
+    [self.inspector reloadAccount];
+    [self.window.toolbar validateVisibleItems];
+}
+
+- (void)scheduleUsageRefresh {
+    [self.usageTimer invalidate];
+    self.usageTimer = nil;
+    if (UsageRefreshMinutes() <= 0) return;
+    self.usageTimer = [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(refreshStaleUsage)
+        userInfo:nil repeats:YES];
+    self.usageTimer.tolerance = 10;
+}
+
+- (void)refreshStaleUsage {
+    NSInteger minutes = UsageRefreshMinutes();
+    if (minutes <= 0) return;
+    NSDate *threshold = [NSDate dateWithTimeIntervalSinceNow:-minutes * 60 + 30];
+    NSMutableArray<NSString *> *stale = [NSMutableArray array];
+    for (Account *account in self.store.accounts) {
+        if (account.signedIn && !account.signedIn.boolValue) continue;
+        NSDate *attempted = self.usageAttempts[account.identifier];
+        if (attempted && [attempted compare:threshold] == NSOrderedDescending) continue;
+        if (account.usage && [account.usage.fetchedAt compare:threshold] == NSOrderedDescending) continue;
+        self.usageAttempts[account.identifier] = NSDate.date;
+        [stale addObject:account.identifier];
+    }
+    [self refreshUsageForAccountIDs:stale];
+}
+
+#pragma mark - Tags
+
+- (NSArray<NSString *> *)tokenField:(NSTokenField *)tokenField completionsForSubstring:(NSString *)substring
+    indexOfToken:(NSInteger)tokenIndex indexOfSelectedItem:(NSInteger *)selectedIndex {
+    NSMutableArray *matches = [NSMutableArray array];
+    for (NSString *tag in self.store.tags)
+        if (!substring.length || [tag localizedCaseInsensitiveContainsString:substring]) [matches addObject:tag];
+    return matches;
+}
+
+- (void)promptTagsForAccountIDs:(NSArray<NSString *> *)identifiers {
+    NSArray<Account *> *accounts = [self.store accountsWithIDs:identifiers];
+    if (!accounts.count) return;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = accounts.count == 1
+        ? [NSString stringWithFormat:@"为“%@”添加标签", accounts.firstObject.name]
+        : [NSString stringWithFormat:@"为 %lu 个账号添加标签", (unsigned long)accounts.count];
+    alert.informativeText = @"输入标签后按回车或逗号分隔，已有标签会自动补全。移除标签可在右键菜单的“标签”中取消勾选。";
+    NSTokenField *field = [[NSTokenField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+    field.tokenizingCharacterSet = [NSCharacterSet characterSetWithCharactersInString:@",，"];
+    field.placeholderString = @"例如：主力、备用、风控中";
+    field.delegate = self;
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:@"添加"];
+    [alert addButtonWithTitle:@"取消"];
+    [alert layout];
+    alert.window.initialFirstResponder = field;
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        NSMutableArray<NSString *> *tags = [NSMutableArray array];
+        if ([field.objectValue isKindOfClass:NSArray.class]) [tags addObjectsFromArray:field.objectValue];
+        [tags addObjectsFromArray:[field.stringValue componentsSeparatedByCharactersInSet:field.tokenizingCharacterSet]];
+        NSArray<NSString *> *normalized = AccountNormalizedTags(tags);
+        if (!normalized.count) return;
+        for (Account *account in accounts) account.tags = [account.tags arrayByAddingObjectsFromArray:normalized];
+        [weakSelf.store commit];
     }];
 }
 
@@ -932,6 +1086,24 @@ static BOOL IsChatGPTPage(NSURL *url) {
         [menu addItem:[self menuItem:@"打开授权链接…" symbol:@"person.badge.key" action:@selector(authorizeFromMenu:) object:ids]];
         [menu addItem:[NSMenuItem separatorItem]];
     }
+    [menu addItem:[self menuItem:@"刷新用量与订阅" symbol:@"arrow.clockwise" action:@selector(refreshFromMenu:) object:ids]];
+    if (accounts.count == 1)
+        [menu addItem:[self menuItem:@"从账单页读取档位与月费" symbol:@"creditcard" action:@selector(billingFromMenu:) object:ids]];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *tagItem = [self menuItem:@"标签" symbol:@"tag" action:nil object:nil];
+    NSMenu *tagMenu = [NSMenu new];
+    for (NSString *tag in self.store.tags) {
+        NSUInteger tagged = 0;
+        for (Account *account in accounts) if ([account.tags containsObject:tag]) tagged++;
+        NSMenuItem *item = [self menuItem:tag symbol:nil action:@selector(toggleTagFromMenu:) object:@{@"ids": ids, @"tag": tag}];
+        item.state = tagged == accounts.count ? NSControlStateValueOn : (tagged ? NSControlStateValueMixed : NSControlStateValueOff);
+        [tagMenu addItem:item];
+    }
+    if (tagMenu.numberOfItems) [tagMenu addItem:[NSMenuItem separatorItem]];
+    [tagMenu addItem:[self menuItem:@"添加标签…" symbol:nil action:@selector(promptTagsFromMenu:) object:ids]];
+    tagItem.submenu = tagMenu;
+    [menu addItem:tagItem];
 
     NSMenuItem *groupItem = [self menuItem:@"移动到分组" symbol:@"folder" action:nil object:nil];
     NSMenu *groupMenu = [NSMenu new];
@@ -960,6 +1132,23 @@ static BOOL IsChatGPTPage(NSURL *url) {
 - (void)renameFromMenu:(NSMenuItem *)sender { [self renameAccountID:[sender.representedObject firstObject]]; }
 - (void)authorizeFromMenu:(NSMenuItem *)sender { [self promptAuthorizationForAccountID:[sender.representedObject firstObject]]; }
 - (void)promptGroupFromMenu:(NSMenuItem *)sender { [self promptGroupForAccountIDs:sender.representedObject]; }
+- (void)promptTagsFromMenu:(NSMenuItem *)sender { [self promptTagsForAccountIDs:sender.representedObject]; }
+- (void)refreshFromMenu:(NSMenuItem *)sender { [self refreshUsageForAccountIDs:sender.representedObject]; }
+- (void)billingFromMenu:(NSMenuItem *)sender { [self readBillingForAccountID:[sender.representedObject firstObject]]; }
+
+- (void)toggleTagFromMenu:(NSMenuItem *)sender {
+    NSDictionary *payload = sender.representedObject;
+    NSString *tag = payload[@"tag"];
+    NSArray<Account *> *accounts = [self.store accountsWithIDs:payload[@"ids"]];
+    BOOL allTagged = YES;
+    for (Account *account in accounts) if (![account.tags containsObject:tag]) allTagged = NO;
+    for (Account *account in accounts) {
+        NSMutableArray *tags = [account.tags mutableCopy];
+        if (allTagged) [tags removeObject:tag]; else [tags addObject:tag];
+        account.tags = tags;
+    }
+    [self.store commit];
+}
 - (void)exportFromMenu:(NSMenuItem *)sender { [self exportAccountIDs:sender.representedObject]; }
 - (void)clearFromMenu:(NSMenuItem *)sender { [self clearLoginDataForAccountIDs:sender.representedObject]; }
 - (void)deleteFromMenu:(NSMenuItem *)sender { [self deleteAccountIDs:sender.representedObject]; }
@@ -1008,6 +1197,11 @@ static BOOL IsChatGPTPage(NSURL *url) {
 }
 
 - (void)moveSelectedToGroup:(id)sender { [self promptGroupForAccountIDs:[self targetAccountIDs]]; }
+- (void)addTagsToSelected:(id)sender { [self promptTagsForAccountIDs:[self targetAccountIDs]]; }
+- (void)readBillingForSelected:(id)sender {
+    NSArray<NSString *> *identifiers = [self targetAccountIDs];
+    if (identifiers.count == 1) [self readBillingForAccountID:identifiers.firstObject];
+}
 - (void)clearSelectedLoginData:(id)sender { [self clearLoginDataForAccountIDs:[self targetAccountIDs]]; }
 - (void)deleteSelectedAccounts:(id)sender { [self deleteAccountIDs:[self targetAccountIDs]]; }
 
@@ -1022,8 +1216,11 @@ static BOOL IsChatGPTPage(NSURL *url) {
         return self.selectedAccountID && self.sessions[self.selectedAccountID];
     if (action == @selector(selectPreviousAccount:) || action == @selector(selectNextAccount:))
         return self.sidebar.visibleAccountIDs.count > 1;
-    if (action == @selector(renameSelectedAccount:) || action == @selector(openAuthorizationLink:))
+    if (action == @selector(renameSelectedAccount:) || action == @selector(openAuthorizationLink:) ||
+        action == @selector(readBillingForSelected:))
         return [self targetAccountIDs].count == 1;
+    if (action == @selector(refreshAllUsage:)) return self.store.accounts.count > 0;
+    if (action == @selector(refreshSelectedUsage:) || action == @selector(addTagsToSelected:)) return [self targetAccountIDs].count > 0;
     if (action == @selector(moveSelectedToGroup:) || action == @selector(clearSelectedLoginData:) ||
         action == @selector(deleteSelectedAccounts:)) return [self targetAccountIDs].count > 0;
     if (action == @selector(exportAccounts:)) return self.store.accounts.count > 0;
@@ -1054,7 +1251,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 - (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
     return @[NSToolbarToggleSidebarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier,
              ToolbarBack, ToolbarForward, NSToolbarFlexibleSpaceItemIdentifier, ToolbarMode, NSToolbarFlexibleSpaceItemIdentifier,
-             ToolbarReload, ToolbarHome, ToolbarSession, ToolbarAuthorize,
+             ToolbarReload, ToolbarHome, ToolbarSession, ToolbarAuthorize, ToolbarRefreshUsage,
              NSToolbarInspectorTrackingSeparatorItemIdentifier, NSToolbarFlexibleSpaceItemIdentifier,
              NSToolbarToggleInspectorItemIdentifier];
 }
@@ -1082,6 +1279,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
         ToolbarHome: @[@"house", @"ChatGPT 首页", NSStringFromSelector(@selector(goHome:))],
         ToolbarSession: @[@"key.horizontal", @"查看当前会话", NSStringFromSelector(@selector(showCurrentSession:))],
         ToolbarAuthorize: @[@"person.badge.key", @"用此账号授权登录客户端", NSStringFromSelector(@selector(openAuthorizationLink:))],
+        ToolbarRefreshUsage: @[@"gauge.with.dots.needle.67percent", @"刷新全部账号的用量与订阅", NSStringFromSelector(@selector(refreshAllUsage:))],
         ToolbarAdd: @[@"plus", @"添加账号", NSStringFromSelector(@selector(addAccount:))],
     };
     NSArray *spec = specs[identifier];
