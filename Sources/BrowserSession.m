@@ -2,6 +2,24 @@
 
 NSURL *BrowserHomeURL(void) { return [NSURL URLWithString:@"https://chatgpt.com/"]; }
 
+NSString *const IdentifyAsSafariDefaultsKey = @"identifyAsSafari";
+NSNotificationName const BrowserUserAgentPreferenceDidChangeNotification = @"BrowserUserAgentPreferenceDidChangeNotification";
+
+NSString *BrowserPreferredUserAgent(void) {
+    id enabled = [NSUserDefaults.standardUserDefaults objectForKey:IdentifyAsSafariDefaultsKey];
+    if (enabled && ![enabled boolValue]) return nil;
+    static NSString *agent;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:@"/Applications/Safari.app/Contents/Info.plist"];
+        NSString *version = [info[@"CFBundleShortVersionString"] isKindOfClass:NSString.class] ? info[@"CFBundleShortVersionString"] : nil;
+        // Same shape as Safari's own string; WebKit freezes the OS and engine versions in it.
+        agent = [NSString stringWithFormat:@"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+            "(KHTML, like Gecko) Version/%@ Safari/605.1.15", version.length ? version : @"18.6"];
+    });
+    return agent;
+}
+
 static void *ObserverContext = &ObserverContext;
 
 static NSArray<NSString *> *ObservedKeys(void) {
@@ -57,6 +75,7 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
         _webView.UIDelegate = self;
         _webView.allowsBackForwardNavigationGestures = YES;
         _webView.allowsMagnification = YES;
+        _webView.customUserAgent = BrowserPreferredUserAgent();
         _popupWindows = [NSMutableArray array];
         _downloads = [NSMapTable strongToStrongObjectsMapTable];
         for (NSString *key in ObservedKeys()) [_webView addObserver:self forKeyPath:key options:0 context:ObserverContext];
@@ -85,6 +104,17 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
 - (void)notifyStateChanged { if (self.stateChanged) self.stateChanged(self); }
 
 - (void)goHome { [self.webView loadRequest:[NSURLRequest requestWithURL:BrowserHomeURL()]]; }
+
+- (void)applyPreferredUserAgent {
+    NSString *agent = BrowserPreferredUserAgent();
+    NSString *current = self.webView.customUserAgent.length ? self.webView.customUserAgent : nil;
+    if (agent == current || [agent isEqualToString:current]) return;
+    self.webView.customUserAgent = agent;
+    for (NSWindow *window in self.popupWindows) {
+        if ([window.contentView isKindOfClass:WKWebView.class]) ((WKWebView *)window.contentView).customUserAgent = agent;
+    }
+    if (self.webView.URL) [self.webView reload];
+}
 
 - (void)retry {
     NSURL *failed = self.lastError.userInfo[NSURLErrorFailingURLErrorKey];
@@ -228,6 +258,7 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
         return nil;
     }
     WKWebView *popup = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 780, 680) configuration:configuration];
+    popup.customUserAgent = self.webView.customUserAgent;
     popup.navigationDelegate = self;
     popup.UIDelegate = self;
     NSWindow *window = [[NSWindow alloc] initWithContentRect:popup.frame

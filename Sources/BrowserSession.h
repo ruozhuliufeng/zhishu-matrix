@@ -5,6 +5,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 NSURL *BrowserHomeURL(void);
 
+/// NSUserDefaults key: present pages to sites as Safari (default YES). Without it chatgpt.com treats the
+/// embedded WebKit view as its desktop client and shows only Work and Codex instead of the web version.
+extern NSString *const IdentifyAsSafariDefaultsKey;
+extern NSNotificationName const BrowserUserAgentPreferenceDidChangeNotification;
+/// Safari's user agent for the installed Safari version, or nil to use WebKit's default.
+NSString *_Nullable BrowserPreferredUserAgent(void);
+
 /// One account's ChatGPT page, backed by its own persistent WebKit data store.
 @interface BrowserSession : NSObject <WKNavigationDelegate, WKUIDelegate>
 @property (nonatomic, readonly) NSString *accountID;
@@ -27,6 +34,8 @@ NSURL *BrowserHomeURL(void);
 - (instancetype)initWithAccountID:(NSString *)accountID dataStore:(nullable WKWebsiteDataStore *)dataStore
     initialURL:(NSURL *)initialURL;
 - (void)goHome;
+/// Applies BrowserPreferredUserAgent() and reloads the page if it changed.
+- (void)applyPreferredUserAgent;
 - (void)retry;
 - (void)invalidate;
 @end

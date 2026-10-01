@@ -108,6 +108,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
             name:AccountStoreDidChangeNotification object:store];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(dayDidChange:)
             name:NSCalendarDayChangedNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userAgentPreferenceDidChange:)
+            name:BrowserUserAgentPreferenceDidChangeNotification object:nil];
         [self applyMode];
         [self updateDockBadge];
     }
@@ -190,6 +192,10 @@ static BOOL IsChatGPTPage(NSURL *url) {
         [self updateWindowTitle];
         [self updateDockBadge];
     });
+}
+
+- (void)userAgentPreferenceDidChange:(NSNotification *)notification {
+    for (BrowserSession *session in self.sessions.allValues) [session applyPreferredUserAgent];
 }
 
 - (void)rememberSelection:(NSString *)identifier {

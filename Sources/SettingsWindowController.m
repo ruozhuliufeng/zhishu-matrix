@@ -1,16 +1,18 @@
 #import "SettingsWindowController.h"
 #import "AuthorizationLink.h"
+#import "BrowserSession.h"
 #import "DeskUI.h"
 
 @interface SettingsWindowController () <NSTextFieldDelegate, NSWindowDelegate>
 @property (nonatomic, strong) NSTextField *authField;
 @property (nonatomic, strong) NSTextField *authError;
+@property (nonatomic, strong) NSButton *safariToggle;
 @end
 
 @implementation SettingsWindowController
 
 - (instancetype)init {
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 540, 220)
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 540, 330)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
     if ((self = [super initWithWindow:window])) {
         window.title = @"设置";
@@ -26,6 +28,15 @@
 - (void)buildContent {
     NSView *root = [NSView new];
     self.window.contentView = root;
+    NSTextField *webTitle = DeskLabel(@"网页", 13, NSFontWeightSemibold);
+    self.safariToggle = [NSButton checkboxWithTitle:@"以 Safari 浏览器身份打开网页（推荐）" target:self action:@selector(safariToggled:)];
+    self.safariToggle.state = BrowserPreferredUserAgent() ? NSControlStateValueOn : NSControlStateValueOff;
+    NSTextField *webHint = [NSTextField wrappingLabelWithString:
+        @"关闭后，ChatGPT 会把本应用识别为桌面客户端，只显示 Work 和 Codex，没有普通聊天，账单等设置也会要求前往网页版。修改后已打开的账号页面会重新载入。"];
+    webHint.font = [NSFont systemFontOfSize:11];
+    webHint.textColor = NSColor.secondaryLabelColor;
+    webHint.preferredMaxLayoutWidth = 500;
+    NSBox *separator = DeskSeparator();
     NSTextField *title = DeskLabel(@"默认授权链接", 13, NSFontWeightSemibold);
     self.authField = [NSTextField new];
     self.authField.placeholderString = @"https://…";
@@ -43,12 +54,22 @@
     self.authError.textColor = NSColor.systemRedColor;
     self.authError.hidden = YES;
 
-    for (NSView *view in @[title, self.authField, hint, self.authError]) {
+    for (NSView *view in @[webTitle, self.safariToggle, webHint, separator, title, self.authField, hint, self.authError]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:view];
     }
     [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:root.topAnchor constant:20],
+        [webTitle.topAnchor constraintEqualToAnchor:root.topAnchor constant:20],
+        [webTitle.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
+        [self.safariToggle.topAnchor constraintEqualToAnchor:webTitle.bottomAnchor constant:10],
+        [self.safariToggle.leadingAnchor constraintEqualToAnchor:webTitle.leadingAnchor],
+        [webHint.topAnchor constraintEqualToAnchor:self.safariToggle.bottomAnchor constant:6],
+        [webHint.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:40],
+        [webHint.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20],
+        [separator.topAnchor constraintEqualToAnchor:webHint.bottomAnchor constant:18],
+        [separator.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
+        [separator.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20],
+        [title.topAnchor constraintEqualToAnchor:separator.bottomAnchor constant:18],
         [title.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
         [self.authField.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:8],
         [self.authField.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
@@ -80,6 +101,12 @@
 }
 
 - (void)controlTextDidEndEditing:(NSNotification *)notification { [self saveAuthorizationURL]; }
+
+- (void)safariToggled:(id)sender {
+    [NSUserDefaults.standardUserDefaults setBool:self.safariToggle.state == NSControlStateValueOn
+        forKey:IdentifyAsSafariDefaultsKey];
+    [NSNotificationCenter.defaultCenter postNotificationName:BrowserUserAgentPreferenceDidChangeNotification object:nil];
+}
 
 - (void)commitEditing {
     if (self.authField.currentEditor) [self.window makeFirstResponder:nil];
