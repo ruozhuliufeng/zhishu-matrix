@@ -1,6 +1,7 @@
 #import "AuthorizationLink.h"
 
 NSString *const DefaultAuthorizationURLDefaultsKey = @"defaultAuthorizationURL";
+NSString *const CaptureAuthorizationCallbackDefaultsKey = @"captureAuthorizationCallback";
 
 static BOOL IsWebURL(NSURL *url) {
     NSString *scheme = url.scheme.lowercaseString;

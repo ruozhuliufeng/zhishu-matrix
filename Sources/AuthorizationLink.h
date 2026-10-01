@@ -4,6 +4,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// NSUserDefaults key for the authorization link used when an account has none of its own.
 extern NSString *const DefaultAuthorizationURLDefaultsKey;
+/// NSUserDefaults key remembering whether the last authorization only captured the callback address.
+extern NSString *const CaptureAuthorizationCallbackDefaultsKey;
 
 /// The http(s) link in `text`: the whole string when it is a link (line breaks from wrapped
 /// terminal output are ignored), otherwise the first link found inside it.

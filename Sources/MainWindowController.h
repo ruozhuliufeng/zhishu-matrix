@@ -9,8 +9,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithStore:(AccountStore *)store;
 - (void)showError:(NSString *)title detail:(nullable NSString *)detail;
 - (void)prepareForTermination;
-/// Opens `url` in a new authorization window signed in as the account.
-- (nullable AuthorizationWindowController *)openAuthorizationURL:(NSURL *)url forAccountID:(NSString *)identifier;
+/// Opens `url` in a new authorization window signed in as the account. With `captureCallback`, the
+/// localhost callback is only shown for copying instead of being opened on this Mac.
+- (nullable AuthorizationWindowController *)openAuthorizationURL:(NSURL *)url forAccountID:(NSString *)identifier
+    captureCallback:(BOOL)captureCallback;
 
 - (IBAction)revealDataFile:(nullable id)sender;
 - (IBAction)focusSearch:(nullable id)sender;

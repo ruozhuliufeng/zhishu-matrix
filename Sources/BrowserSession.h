@@ -19,6 +19,8 @@ NSURL *BrowserHomeURL(void);
 /// The page navigated to a non-web scheme (e.g. a client's callback) and it was passed to macOS;
 /// `opened` is NO when no app handles the scheme.
 @property (nonatomic, copy, nullable) void (^externalURLOpened)(BrowserSession *session, NSURL *url, BOOL opened);
+/// Asked before each main-frame http(s) navigation, including redirects; return NO to cancel it.
+@property (nonatomic, copy, nullable) BOOL (^allowsNavigation)(BrowserSession *session, NSURL *url);
 
 - (instancetype)initWithAccountID:(NSString *)accountID;
 /// `dataStore` defaults to the account's persistent store; pass a loaded session's store to share it.

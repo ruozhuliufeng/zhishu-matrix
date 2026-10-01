@@ -767,8 +767,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
         ? @"无法识别授权链接，请粘贴以 http:// 或 https:// 开头的完整链接。"
         : @"粘贴客户端提供的授权链接，它会在此账号的独立会话中打开；授权后客户端会通过回调地址自动完成登录。每次登录都会生成新链接的客户端（如 Codex）请使用最新的链接。";
     if (invalid) alert.alertStyle = NSAlertStyleWarning;
-    NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 440, 98)];
-    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 28, 440, 70)];
+    NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 440, 122)];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 52, 440, 70)];
     field.placeholderString = @"https://auth.openai.com/oauth/authorize?…";
     field.usesSingleLineMode = NO;
     field.cell.wraps = YES;
@@ -777,9 +777,15 @@ static BOOL IsChatGPTPage(NSURL *url) {
     field.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     field.stringValue = text ?: @"";
     NSButton *remember = [NSButton checkboxWithTitle:@"保存为此账号的授权链接" target:nil action:nil];
-    remember.frame = NSMakeRect(0, 0, 440, 20);
+    remember.frame = NSMakeRect(0, 24, 440, 20);
+    NSButton *capture = [NSButton checkboxWithTitle:@"只获取回调地址，不在本机打开（客户端在其他设备上时使用）" target:nil action:nil];
+    capture.frame = NSMakeRect(0, 0, 440, 20);
+    capture.toolTip = @"授权后拦截 localhost 回调，只显示回调地址供复制，授权码不会发送给本机的任何程序";
+    capture.state = [NSUserDefaults.standardUserDefaults boolForKey:CaptureAuthorizationCallbackDefaultsKey]
+        ? NSControlStateValueOn : NSControlStateValueOff;
     [accessory addSubview:field];
     [accessory addSubview:remember];
+    [accessory addSubview:capture];
     alert.accessoryView = accessory;
     [alert addButtonWithTitle:@"打开"];
     [alert addButtonWithTitle:@"取消"];
@@ -803,17 +809,20 @@ static BOOL IsChatGPTPage(NSURL *url) {
             current.authURL = url.absoluteString;
             [strongSelf.store commit];
         }
-        [strongSelf openAuthorizationURL:url forAccountID:identifier];
+        BOOL captureCallback = capture.state == NSControlStateValueOn;
+        [NSUserDefaults.standardUserDefaults setBool:captureCallback forKey:CaptureAuthorizationCallbackDefaultsKey];
+        [strongSelf openAuthorizationURL:url forAccountID:identifier captureCallback:captureCallback];
     }];
 }
 
-- (AuthorizationWindowController *)openAuthorizationURL:(NSURL *)url forAccountID:(NSString *)identifier {
+- (AuthorizationWindowController *)openAuthorizationURL:(NSURL *)url forAccountID:(NSString *)identifier
+    captureCallback:(BOOL)captureCallback {
     Account *account = [self.store accountWithID:identifier];
     if (!account) return nil;
     // Share the loaded page's store so a sign-in done in either window is visible to the other.
     WKWebsiteDataStore *dataStore = self.sessions[identifier].webView.configuration.websiteDataStore;
     AuthorizationWindowController *controller = [[AuthorizationWindowController alloc] initWithAccount:account
-        URL:url dataStore:dataStore];
+        URL:url dataStore:dataStore captureCallback:captureCallback];
     __weak typeof(self) weakSelf = self;
     controller.closed = ^(AuthorizationWindowController *closed) {
         // Let the window finish closing before the controller that owns it is released.

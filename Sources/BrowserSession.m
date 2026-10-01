@@ -107,6 +107,7 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
     self.stateChanged = nil;
     self.pageReady = nil;
     self.externalURLOpened = nil;
+    self.allowsNavigation = nil;
 }
 
 - (void)openExternally:(NSURL *)url {
@@ -123,6 +124,12 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
     if (navigationAction.targetFrame.isMainFrame && scheme.length &&
         ![@[@"http", @"https", @"about", @"blob", @"data"] containsObject:scheme]) {
         [self openExternally:url];
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
+    BOOL mainFrame = !navigationAction.targetFrame || navigationAction.targetFrame.isMainFrame;
+    if (webView == self.webView && mainFrame && self.allowsNavigation &&
+        ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) && !self.allowsNavigation(self, url)) {
         decisionHandler(WKNavigationActionPolicyCancel);
         return;
     }
