@@ -1,7 +1,10 @@
 #import <Foundation/Foundation.h>
 #import "../Sources/Account.h"
+#import "../Sources/AccountInsights.h"
 #import "../Sources/AuthorizationLink.h"
+#import "../Sources/ManagementScope.h"
 #import "../Sources/SubscriptionParser.h"
+#import "../Sources/WebDAVClient.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -306,6 +309,261 @@ static void TestBackendJSON(void) {
     CHECK([[SubscriptionParser planFromPlanType:@"pro"] isEqualToString:@"Pro"], "maps plan_type pro");
 }
 
+
+static AccountUsage *UsageWith(double shortUsed, double longUsed) {
+    return [[AccountUsage alloc] initWithDictionary:@{
+        @"fetchedAt": @"2026-10-01T08:00:00Z",
+        @"windows": @[@{@"usedPercent": @(shortUsed), @"windowSeconds": @18000},
+                      @{@"usedPercent": @(longUsed), @"windowSeconds": @604800}]}];
+}
+
+static void TestInsights(void) {
+    NSDate *today = AccountDateFromDayString(@"2026-10-01");
+    Account *healthy = [Account accountWithName:@"主力"];
+    healthy.signedIn = @YES;
+    healthy.usage = UsageWith(20, 30);
+    CHECK(healthy.usage.windows.count == 2, "builds usage snapshots for insight tests");
+    Account *roomy = [Account accountWithName:@"备用"];
+    roomy.signedIn = @YES;
+    roomy.usage = UsageWith(10, 5);
+    Account *low = [Account accountWithName:@"告急"];
+    low.signedIn = @YES;
+    low.usage = UsageWith(10, 95);
+    Account *signedOut = [Account accountWithName:@"掉线"];
+    signedOut.signedIn = @NO;
+    signedOut.usage = UsageWith(0, 0);
+    Account *fresh = [Account accountWithName:@"新号"];
+
+    CHECK(AccountRecommended(@[healthy, roomy, low, signedOut, fresh]) == roomy, "recommends the account with the most quota");
+    CHECK(AccountRecommended(@[low, signedOut, fresh]) == nil, "recommends nothing when every account is short or signed out");
+    roomy.refreshError = @"无法连接";
+    CHECK(AccountRecommended(@[healthy, roomy]) == healthy, "skips accounts whose last refresh failed");
+    roomy.refreshError = nil;
+
+    CHECK([AccountStatus statusForAccount:signedOut recommended:NO now:today].kind == AccountStatusSignedOut, "signed out wins");
+    AccountStatus *lowStatus = [AccountStatus statusForAccount:low recommended:NO now:today];
+    CHECK(lowStatus.kind == AccountStatusQuotaLow && [lowStatus.title isEqualToString:@"额度剩 5%"], "reports low quota with the percentage");
+    CHECK(lowStatus.tone == AccountStatusToneCritical, "low quota is critical");
+    low.expiresAt = @"2026-09-20";
+    CHECK([AccountStatus statusForAccount:low recommended:NO now:today].kind == AccountStatusExpired, "expiry outranks quota");
+    healthy.expiresAt = @"2026-10-04";
+    AccountStatus *soon = [AccountStatus statusForAccount:healthy recommended:YES now:today];
+    CHECK(soon.kind == AccountStatusExpiringSoon && [soon.title isEqualToString:@"3 天后到期"], "expiring soon outranks recommended");
+    healthy.autoRenew = @YES;
+    CHECK([AccountStatus statusForAccount:healthy recommended:YES now:today].kind == AccountStatusRecommended,
+        "an auto-renewing date is not a risk");
+    CHECK([AccountStatus statusForAccount:fresh recommended:NO now:today].kind == AccountStatusNormal, "no data is normal");
+    fresh.refreshError = @"HTTP 500";
+    CHECK([AccountStatus statusForAccount:fresh recommended:NO now:today].kind == AccountStatusRefreshFailed, "reports refresh failures");
+
+    Account *twin = [Account accountWithName:@"重复"];
+    twin.email = @"Same@Example.com";
+    healthy.email = @"same@example.com";
+    NSDictionary *duplicates = AccountDuplicateEmails(@[healthy, roomy, twin, fresh]);
+    CHECK(duplicates.count == 1 && [duplicates[@"same@example.com"] count] == 2, "finds emails used twice regardless of case");
+    CHECK(AccountDuplicateEmails(@[roomy, fresh]).count == 0, "empty emails are not duplicates");
+
+    healthy.monthlyPrice = @(8919.64);
+    healthy.currency = @"PHP";
+    healthy.tags = @[@"主力"];
+    roomy.expiresAt = @"2026-10-25";
+    NSString *calendar = AccountRenewalCalendar(@[healthy, roomy, fresh]);
+    CHECK([calendar hasPrefix:@"BEGIN:VCALENDAR\r\n"] && [calendar hasSuffix:@"END:VCALENDAR\r\n"], "writes a calendar with CRLF lines");
+    CHECK([calendar componentsSeparatedByString:@"BEGIN:VEVENT"].count == 3, "adds one event per account with a date");
+    CHECK([calendar containsString:@"DTSTART;VALUE=DATE:20261004"] && [calendar containsString:@"DTEND;VALUE=DATE:20261005"],
+        "uses all-day events");
+    CHECK([calendar componentsSeparatedByString:@"RRULE:FREQ=MONTHLY"].count == 2, "repeats only auto-renewing accounts");
+    CHECK([calendar containsString:@"PHP 8\\,919.64"], "escapes commas in text");
+    CHECK([calendar containsString:@"TRIGGER:-P1D"], "reminds a day before");
+    BOOL folded = YES;
+    for (NSString *line in [calendar componentsSeparatedByString:@"\r\n"])
+        if ([line lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 75) folded = NO;
+    CHECK(folded, "folds long lines at 75 octets");
+
+    NSDictionary *proxy = AccountProxyComponents(@"127.0.0.1:7890");
+    CHECK([proxy[@"scheme"] isEqualToString:@"http"] && [proxy[@"host"] isEqualToString:@"127.0.0.1"] && [proxy[@"port"] isEqual:@7890],
+        "reads a bare host:port as an HTTP proxy");
+    proxy = AccountProxyComponents(@" socks5://user:p%40ss@proxy.example.com:1080 ");
+    CHECK([proxy[@"scheme"] isEqualToString:@"socks5"] && [proxy[@"user"] isEqualToString:@"user"] &&
+        [proxy[@"password"] isEqualToString:@"p@ss"], "reads SOCKS5 proxies with credentials");
+    CHECK(AccountProxyComponents(@"ftp://host:21") == nil && AccountProxyComponents(@"host") == nil &&
+        AccountProxyComponents(@"") == nil && AccountProxyComponents(@"http://host:99999") == nil, "rejects non-proxy text");
+
+    NSURL *historyURL = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"usage-history-%@.json", NSUUID.UUID.UUIDString]]];
+    UsageHistory *history = [[UsageHistory alloc] initWithFileURL:historyURL];
+    NSDate *start = [NSDate dateWithTimeIntervalSince1970:1790000000];
+    for (int hour = 0; hour < 4; hour++) {
+        AccountUsageWindow *weekly = [AccountUsageWindow new];
+        weekly.windowSeconds = 604800;
+        weekly.usedPercent = 40 + hour * 10;
+        [history recordUsageWindows:@[weekly] forAccountID:WorkID at:[start dateByAddingTimeInterval:hour * 3600]];
+    }
+    AccountUsageWindow *repeat = [AccountUsageWindow new];
+    repeat.windowSeconds = 604800;
+    repeat.usedPercent = 70;
+    [history recordUsageWindows:@[repeat] forAccountID:WorkID at:[start dateByAddingTimeInterval:3 * 3600 + 30]];
+    CHECK([history pointsForAccountID:WorkID].count == 4, "skips an identical reading taken right after the last one");
+    NSError *error = nil;
+    CHECK([history save:&error], "saves usage history");
+    UsageHistory *reloaded = [[UsageHistory alloc] initWithFileURL:historyURL];
+    NSArray *points = [reloaded pointsForAccountID:WorkID];
+    CHECK(points.count == 4 && [points.lastObject[@"long"] isEqual:@30], "reloads usage history");
+
+    AccountUsageWindow *current = [AccountUsageWindow new];
+    current.windowSeconds = 604800;
+    current.usedPercent = 70;
+    NSDate *now = [start dateByAddingTimeInterval:3 * 3600];
+    current.resetAt = [now dateByAddingTimeInterval:3 * 86400];
+    NSDate *exhaustion = [UsageHistory predictedExhaustionOfWindow:current key:@"long" points:points now:now];
+    CHECK(exhaustion && fabs(exhaustion.timeIntervalSince1970 - (now.timeIntervalSince1970 + 3 * 3600)) < 60,
+        "projects 10% an hour to run out three hours later");
+    current.resetAt = [now dateByAddingTimeInterval:3600];
+    CHECK([UsageHistory predictedExhaustionOfWindow:current key:@"long" points:points now:now] == nil,
+        "no warning when the window resets first");
+    current.resetAt = [now dateByAddingTimeInterval:3 * 86400];
+    CHECK([UsageHistory predictedExhaustionOfWindow:current key:@"short" points:points now:now] == nil,
+        "needs readings of the same window");
+    NSDate *later = [start dateByAddingTimeInterval:9 * 86400];
+    AccountUsageWindow *weekly = [AccountUsageWindow new];
+    weekly.windowSeconds = 604800;
+    weekly.usedPercent = 5;
+    [reloaded recordUsageWindows:@[weekly] forAccountID:WorkID at:later];
+    CHECK([reloaded pointsForAccountID:WorkID].count == 1, "drops readings older than eight days");
+    [reloaded removeAccountIDs:@[WorkID]];
+    CHECK([reloaded pointsForAccountID:WorkID].count == 0, "forgets removed accounts");
+    [NSFileManager.defaultManager removeItemAtURL:historyURL error:nil];
+
+    Account *proxied = [[Account alloc] initWithDictionary:@{@"id": TeamID, @"name": @"代理", @"proxy": @" socks5://127.0.0.1:1080 "}];
+    CHECK([proxied.proxy isEqualToString:@"socks5://127.0.0.1:1080"] &&
+        [proxied.dictionaryRepresentation[@"proxy"] isEqualToString:@"socks5://127.0.0.1:1080"], "stores a per-account proxy");
+    proxied.proxy = @"http://me:secret@10.0.0.2:3128";
+    CHECK([proxied.exportRepresentation[@"proxy"] isEqualToString:@"http://me@10.0.0.2:3128"] &&
+        [proxied.dictionaryRepresentation[@"proxy"] containsString:@"secret"], "exports leave the proxy password behind");
+}
+
+static void TestWebDAV(void) {
+    NSString *xml = @"<?xml version=\"1.0\"?><D:multistatus xmlns:D=\"DAV:\" xmlns:lp1=\"DAV:\">"
+        "<D:response><D:href>/dav/Zhishu%20Matrix/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype>"
+        "</D:prop></D:propstat></D:response>"
+        "<D:response><D:href>https://dav.example.com/dav/Zhishu%20Matrix/zhishu-matrix-20261001-120000.json</D:href>"
+        "<D:propstat><D:prop><lp1:getlastmodified>Thu, 01 Oct 2026 12:00:05 GMT</lp1:getlastmodified>"
+        "<D:getcontentlength>2048</D:getcontentlength><D:resourcetype/></D:prop></D:propstat></D:response>"
+        "<D:response><D:href>/dav/Zhishu%20Matrix/old/zhishu-matrix-20250101-000000.json</D:href><D:propstat><D:prop>"
+        "<D:resourcetype/></D:prop></D:propstat></D:response>"
+        "<D:response><D:href>/dav/Zhishu%20Matrix/sub/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype>"
+        "</D:prop></D:propstat></D:response>"
+        "<d:response xmlns:d=\"DAV:\"><d:href>/dav/Zhishu%20Matrix/notes.txt</d:href></d:response>"
+        "</D:multistatus>";
+    NSArray<WebDAVFile *> *files = [WebDAVClient filesFromMultistatus:[xml dataUsingEncoding:NSUTF8StringEncoding]
+        folderPath:@"/dav/Zhishu Matrix"];
+    CHECK(files.count == 2, "lists only the files directly inside the folder");
+    WebDAVFile *backup = files.firstObject;
+    CHECK([backup.name isEqualToString:@"zhishu-matrix-20261001-120000.json"] && backup.size == 2048, "reads names and sizes");
+    CHECK(backup.modifiedAt.timeIntervalSince1970 == 1790856005, "reads modification dates");
+    CHECK([WebDAVClient filesFromMultistatus:[@"not xml" dataUsingEncoding:NSUTF8StringEncoding] folderPath:@"/"].count == 0,
+        "ignores unreadable replies");
+    WebDAVClient *client = [[WebDAVClient alloc] initWithServer:@" https://dav.jianguoyun.com/dav " folder:@"/智枢矩阵/备份/"
+        username:@"me" password:@"pw"];
+    CHECK([client.folderURL.absoluteString isEqualToString:
+        @"https://dav.jianguoyun.com/dav/%E6%99%BA%E6%9E%A2%E7%9F%A9%E9%98%B5/%E5%A4%87%E4%BB%BD/"], "joins server and folder");
+    CHECK([[WebDAVClient alloc] initWithServer:@"ftp://example.com" folder:nil username:@"" password:@""] == nil,
+        "only accepts http(s) servers");
+    CHECK([[WebDAVClient messageForStatus:401] containsString:@"密码"], "explains authentication failures");
+}
+
+static void TestAlerts(void) {
+    NSDate *now = AccountDateFromDayString(@"2026-10-01");
+    Account *main = [[Account alloc] initWithDictionary:@{@"id": WorkID, @"name": @"主力"}];
+    main.signedIn = @YES;
+    main.usage = UsageWith(10, 92);
+    main.usage.longWindow.resetAt = [now dateByAddingTimeInterval:2 * 86400];
+    Account *spare = [[Account alloc] initWithDictionary:@{@"id": HomeID, @"name": @"备用"}];
+    spare.signedIn = @YES;
+    spare.usage = UsageWith(0, 24);
+    NSMutableDictionary *state = [NSMutableDictionary dictionary];
+    AccountAlertKinds all = AccountAlertQuota | AccountAlertRenewal | AccountAlertSignedOut;
+
+    NSArray *alerts = AccountAlertsDue(@[main, spare], now, state, all);
+    CHECK(alerts.count == 1 && [alerts[0][@"kind"] isEqualToString:@"quota"], "announces a window running low");
+    CHECK([alerts[0][@"title"] isEqualToString:@"“主力”额度告急：每周剩 8%"], "names the account and the window");
+    CHECK([alerts[0][@"body"] containsString:@"2 天后重置"] && [alerts[0][@"body"] containsString:@"“备用”（剩 76%）"],
+        "says when it resets and which account to use instead");
+    CHECK([alerts[0][@"recommendedID"] isEqualToString:HomeID], "carries the recommended account");
+    CHECK(AccountAlertsDue(@[main, spare], now, state, all).count == 0, "announces each low window once");
+
+    NSData *saved = [NSJSONSerialization dataWithJSONObject:state options:0 error:nil];
+    NSMutableDictionary *restored = [[NSJSONSerialization JSONObjectWithData:saved options:NSJSONReadingMutableContainers error:nil] mutableCopy];
+    CHECK(saved && AccountAlertsDue(@[main, spare], now, restored, all).count == 0, "remembers announcements across launches");
+
+    main.usage = UsageWith(0, 95);
+    main.usage.longWindow.resetAt = [now dateByAddingTimeInterval:2 * 86400 + 300];
+    CHECK(AccountAlertsDue(@[main, spare], now, state, all).count == 0, "small drifts in the reset time are the same period");
+    main.usage = UsageWith(0, 0);
+    main.usage.longWindow.resetAt = [now dateByAddingTimeInterval:9 * 86400];
+    alerts = AccountAlertsDue(@[main, spare], now, state, all);
+    CHECK(alerts.count == 1 && [alerts[0][@"kind"] isEqualToString:@"reset"] && [alerts[0][@"title"] containsString:@"已恢复"],
+        "announces when a low window recovers");
+    CHECK(AccountAlertsDue(@[main, spare], now, state, AccountAlertRenewal).count == 0, "respects disabled kinds");
+
+    spare.signedIn = @NO;
+    alerts = AccountAlertsDue(@[main, spare], now, state, all);
+    CHECK(alerts.count == 1 && [alerts[0][@"kind"] isEqualToString:@"signedOut"], "announces a lost sign-in");
+    CHECK(AccountAlertsDue(@[main, spare], now, state, all).count == 0, "announces a lost sign-in once");
+    Account *fresh = [Account accountWithName:@"新号"];
+    fresh.signedIn = @NO;
+    CHECK(AccountAlertsDue(@[main, fresh], now, state, all).count == 0, "never-signed-in accounts are not announced");
+    AccountAlertsForgetSignIn(state, @[WorkID]);
+    main.signedIn = @NO;
+    CHECK(AccountAlertsDue(@[main], now, state, all).count == 0, "a deliberate sign-out is not announced");
+
+    Account *renewing = [[Account alloc] initWithDictionary:@{@"id": TeamID, @"name": @"续费号", @"expiresAt": @"2026-10-02",
+        @"autoRenew": @YES, @"plan": @"Pro 200", @"monthlyPrice": @(8919.64), @"currency": @"PHP"}];
+    Account *ending = [Account accountWithName:@"到期号"];
+    ending.expiresAt = @"2026-10-04";
+    Account *later = [Account accountWithName:@"远期"];
+    later.expiresAt = @"2026-10-20";
+    alerts = AccountAlertsDue(@[renewing, ending, later], now, state, AccountAlertRenewal);
+    CHECK(alerts.count == 2, "reminds about renewals tomorrow and expiries within three days");
+    CHECK([alerts[0][@"title"] isEqualToString:@"“续费号”明天自动续费"] && [alerts[0][@"body"] containsString:@"PHP 8,919.64"],
+        "mentions the renewal price");
+    CHECK([alerts[1][@"title"] isEqualToString:@"“到期号”3 天后到期"], "counts the days to expiry");
+    CHECK(AccountAlertsDue(@[renewing, ending, later], now, state, AccountAlertRenewal).count == 0, "reminds once per stage");
+    NSDate *nextDay = AccountDateFromDayString(@"2026-10-03");
+    alerts = AccountAlertsDue(@[renewing, ending, later], nextDay, state, AccountAlertRenewal);
+    CHECK(alerts.count == 1 && [alerts[0][@"title"] isEqualToString:@"“到期号”明天到期"], "reminds again the day before");
+    AccountAlertsDue(@[ending], nextDay, state, AccountAlertRenewal);
+    CHECK(![[state[@"renewal"] componentsJoinedByString:@","] containsString:TeamID], "forgets reminders of removed accounts");
+}
+
+static void TestScopes(void) {
+    NSDate *now = AccountDateFromDayString(@"2026-10-01");
+    Account *a = [[Account alloc] initWithDictionary:@{@"id": WorkID, @"name": @"A", @"email": @"x@example.com", @"group": @"客户",
+        @"tags": @[@"主力"], @"expiresAt": @"2026-10-03"}];
+    a.usage = UsageWith(0, 90);
+    a.signedIn = @YES;
+    Account *b = [[Account alloc] initWithDictionary:@{@"id": HomeID, @"name": @"B", @"email": @"X@example.com", @"expiresAt": @"2026-10-03",
+        @"autoRenew": @YES}];
+    NSSet *duplicates = AccountDuplicateIDs(@[a, b]);
+    CHECK(duplicates.count == 2, "collects accounts sharing an email");
+    CHECK([[ManagementScope scopeWithKind:ManagementScopeQuotaLow value:nil] includesAccount:a now:now duplicateIDs:duplicates] &&
+        ![[ManagementScope scopeWithKind:ManagementScopeQuotaLow value:nil] includesAccount:b now:now duplicateIDs:duplicates],
+        "quota scope lists low accounts");
+    ManagementScope *expiring = [ManagementScope scopeWithKind:ManagementScopeExpiring value:nil];
+    CHECK([expiring includesAccount:a now:now duplicateIDs:duplicates] && ![expiring includesAccount:b now:now duplicateIDs:duplicates],
+        "expiring scope skips auto-renewing accounts");
+    CHECK([[ManagementScope scopeWithKind:ManagementScopeSignedOut value:nil] includesAccount:b now:now duplicateIDs:duplicates],
+        "accounts never checked count as signed out");
+    CHECK([[ManagementScope scopeWithKind:ManagementScopeGroup value:@""] includesAccount:b now:now duplicateIDs:duplicates] &&
+        [[ManagementScope scopeWithKind:ManagementScopeTag value:@"主力"] includesAccount:a now:now duplicateIDs:duplicates],
+        "group and tag scopes");
+    ManagementScope *tag = [ManagementScope scopeFromString:@"tag:主力:备用"];
+    CHECK(tag.kind == ManagementScopeTag && [tag.value isEqualToString:@"主力:备用"] &&
+        [[ManagementScope scopeFromString:tag.stringValue] isEqual:tag], "round-trips scopes through strings");
+    CHECK([ManagementScope scopeFromString:@"group"] == nil && [ManagementScope scopeFromString:@"nonsense"] == nil, "rejects bad scopes");
+    CHECK([[ManagementScope scopeWithKind:ManagementScopeGroup value:@""].title isEqualToString:@"未分组"], "names the ungrouped list");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -320,6 +578,10 @@ int main(void) {
         TestRenewalAndPrice();
         TestBillingPage();
         TestBackendJSON();
+        TestInsights();
+        TestWebDAV();
+        TestAlerts();
+        TestScopes();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

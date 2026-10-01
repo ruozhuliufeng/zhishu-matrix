@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import "Account.h"
+#import "AccountInsights.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -15,6 +16,7 @@ NSColor *DeskColorForExpiry(AccountExpiryState state);
 /// Green with plenty left, orange under half, red under a fifth.
 NSColor *DeskColorForQuota(double remainingPercent);
 NSColor *DeskColorForTag(NSString *tag);
+NSColor *DeskColorForTone(AccountStatusTone tone);
 /// "3 小时后重置", "6 天后重置".
 NSString *DeskResetDescription(NSDate *_Nullable resetAt);
 NSString *DeskRelativeTime(NSDate *_Nullable date);
@@ -35,11 +37,20 @@ NSString *DeskDateTimeString(NSDate *_Nullable date);
 @property (nonatomic, strong, nullable) NSColor *statusColor;
 @end
 
-/// Rounded tinted capsule used for plan, expiry and login badges.
+/// Rounded tinted capsule used for plan, expiry and status badges, with an optional leading SF Symbol.
 @interface DeskPillView : NSView
 @property (nonatomic, copy) NSString *text;
+@property (nonatomic, copy, nullable) NSString *symbol;
 @property (nonatomic, strong) NSColor *tintColor;
 @property (nonatomic) NSBackgroundStyle backgroundStyle;
+/// Shows the status as a badge; hides itself for AccountStatusNormal unless `showsNormal`.
+- (void)showStatus:(AccountStatus *)status showsNormal:(BOOL)showsNormal;
+@end
+
+/// Remaining-quota lines over time (0–100%) drawn from usage history points {t, short, long}.
+@interface DeskSparklineView : NSView
+@property (nonatomic, copy) NSArray<NSDictionary *> *points;
+@property (nonatomic) NSTimeInterval span;
 @end
 
 /// Rounded usage bar; draws an empty track when the value is unknown.

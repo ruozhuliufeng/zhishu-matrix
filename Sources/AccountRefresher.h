@@ -20,6 +20,8 @@ NSInteger UsageRefreshMinutes(void);
 @property (nonatomic, copy, nullable) WKWebsiteDataStore *_Nonnull (^dataStoreProvider)(NSString *accountID);
 /// Called on the main queue whenever an account starts or finishes refreshing.
 @property (nonatomic, copy, nullable) void (^stateChanged)(void);
+/// Called after an account's usage was read successfully.
+@property (nonatomic, copy, nullable) void (^usageRead)(NSString *identifier);
 @property (nonatomic, readonly) BOOL isRefreshing;
 
 - (instancetype)initWithStore:(AccountStore *)store;

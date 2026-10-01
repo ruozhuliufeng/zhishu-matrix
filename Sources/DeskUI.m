@@ -97,6 +97,16 @@ NSColor *DeskColorForQuota(double remainingPercent) {
     return NSColor.systemGreenColor;
 }
 
+NSColor *DeskColorForTone(AccountStatusTone tone) {
+    switch (tone) {
+        case AccountStatusToneCritical: return NSColor.systemRedColor;
+        case AccountStatusToneWarning: return NSColor.systemOrangeColor;
+        case AccountStatusToneGood: return NSColor.systemGreenColor;
+        case AccountStatusToneNeutral: return NSColor.systemGrayColor;
+    }
+    return NSColor.systemGrayColor;
+}
+
 NSColor *DeskColorForTag(NSString *tag) { return DeskColorForSeed([@"tag:" stringByAppendingString:tag ?: @""]); }
 
 NSString *DeskResetDescription(NSDate *resetAt) {
@@ -220,12 +230,25 @@ static NSFont *PillFont(void) { return [NSFont systemFontOfSize:10.5 weight:NSFo
     [self invalidateIntrinsicContentSize];
     [self setNeedsDisplay:YES];
 }
+- (void)setSymbol:(NSString *)symbol {
+    _symbol = [symbol copy];
+    [self invalidateIntrinsicContentSize];
+    [self setNeedsDisplay:YES];
+}
 - (void)setTintColor:(NSColor *)tintColor { _tintColor = tintColor ?: NSColor.systemGrayColor; [self setNeedsDisplay:YES]; }
 - (void)setBackgroundStyle:(NSBackgroundStyle)backgroundStyle { _backgroundStyle = backgroundStyle; [self setNeedsDisplay:YES]; }
+- (void)showStatus:(AccountStatus *)status showsNormal:(BOOL)showsNormal {
+    BOOL visible = status && (showsNormal || status.kind != AccountStatusNormal);
+    self.text = visible ? status.title : @"";
+    self.symbol = visible ? status.symbol : nil;
+    self.tintColor = DeskColorForTone(status.tone);
+    self.toolTip = visible ? status.title : nil;
+}
+- (CGFloat)symbolWidth { return self.symbol.length ? 13 : 0; }
 - (NSSize)intrinsicContentSize {
     if (!self.text.length) return NSMakeSize(0, 18);
     NSSize size = [self.text sizeWithAttributes:@{NSFontAttributeName: PillFont()}];
-    return NSMakeSize(ceil(size.width) + 14, 18);
+    return NSMakeSize(ceil(size.width) + 14 + self.symbolWidth, 18);
 }
 - (void)drawRect:(NSRect)dirtyRect {
     if (!self.text.length) return;
@@ -236,8 +259,74 @@ static NSFont *PillFont(void) { return [NSFont systemFontOfSize:10.5 weight:NSFo
     [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:radius yRadius:radius] fill];
     NSDictionary *attributes = @{NSFontAttributeName: PillFont(), NSForegroundColorAttributeName: tint};
     NSSize size = [self.text sizeWithAttributes:attributes];
-    [self.text drawAtPoint:NSMakePoint(round((NSWidth(self.bounds) - size.width) / 2),
-        round((NSHeight(self.bounds) - size.height) / 2)) withAttributes:attributes];
+    CGFloat contentWidth = size.width + self.symbolWidth;
+    CGFloat x = round((NSWidth(self.bounds) - contentWidth) / 2);
+    if (self.symbol.length) {
+        NSImageSymbolConfiguration *configuration = [[NSImageSymbolConfiguration configurationWithPointSize:9 weight:NSFontWeightBold]
+            configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:tint]];
+        NSImage *image = [[NSImage imageWithSystemSymbolName:self.symbol accessibilityDescription:nil]
+            imageWithSymbolConfiguration:configuration];
+        NSSize imageSize = image.size;
+        [image drawInRect:NSMakeRect(x, round((NSHeight(self.bounds) - imageSize.height) / 2), imageSize.width, imageSize.height)];
+        x += self.symbolWidth;
+    }
+    [self.text drawAtPoint:NSMakePoint(x, round((NSHeight(self.bounds) - size.height) / 2)) withAttributes:attributes];
+}
+@end
+
+@implementation DeskSparklineView
+- (instancetype)initWithFrame:(NSRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        _points = @[];
+        _span = 7 * 86400;
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+    }
+    return self;
+}
+- (BOOL)isFlipped { return NO; }
+- (void)setPoints:(NSArray<NSDictionary *> *)points {
+    _points = [points copy] ?: @[];
+    // Show the history that exists: at least six hours, at most a week.
+    double first = [_points.firstObject[@"t"] doubleValue];
+    double covered = first > 0 ? NSDate.date.timeIntervalSince1970 - first : 0;
+    _span = MAX(6 * 3600, MIN(7 * 86400, covered * 1.05));
+    [self setNeedsDisplay:YES];
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    NSRect plot = NSInsetRect(self.bounds, 1, 2);
+    NSBezierPath *frame = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:6 yRadius:6];
+    [[NSColor.labelColor colorWithAlphaComponent:0.035] setFill];
+    [frame fill];
+    [[NSColor.labelColor colorWithAlphaComponent:0.08] setStroke];
+    for (NSNumber *level in @[@20, @50]) {
+        CGFloat y = NSMinY(plot) + NSHeight(plot) * level.doubleValue / 100;
+        NSBezierPath *line = [NSBezierPath bezierPath];
+        CGFloat dash[] = {2, 3};
+        [line setLineDash:dash count:2 phase:0];
+        [line moveToPoint:NSMakePoint(NSMinX(plot), y)];
+        [line lineToPoint:NSMakePoint(NSMaxX(plot), y)];
+        [line stroke];
+    }
+    double end = NSDate.date.timeIntervalSince1970, start = end - self.span;
+    NSArray *series = @[@[@"long", NSColor.systemIndigoColor], @[@"short", NSColor.systemTealColor]];
+    for (NSArray *line in series) {
+        NSBezierPath *path = [NSBezierPath bezierPath];
+        path.lineWidth = 1.5;
+        path.lineJoinStyle = NSLineJoinStyleRound;
+        BOOL started = NO;
+        for (NSDictionary *point in self.points) {
+            double t = [point[@"t"] doubleValue];
+            NSNumber *value = point[line[0]];
+            if (t < start || ![value isKindOfClass:NSNumber.class]) continue;
+            NSPoint p = NSMakePoint(NSMinX(plot) + NSWidth(plot) * (t - start) / self.span,
+                                    NSMinY(plot) + NSHeight(plot) * MAX(0, MIN(100, value.doubleValue)) / 100);
+            if (started) [path lineToPoint:p]; else [path moveToPoint:p];
+            started = YES;
+        }
+        if (!started) continue;
+        [(NSColor *)line[1] setStroke];
+        [path stroke];
+    }
 }
 @end
 

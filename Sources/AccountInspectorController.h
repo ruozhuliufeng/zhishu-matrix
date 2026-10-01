@@ -8,6 +8,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithCoordinator:(id<AccountCoordinator>)coordinator;
 - (void)showAccountID:(nullable NSString *)identifier selectionCount:(NSUInteger)count;
 - (void)reloadAccount;
+/// Collapses or expands the sections as last chosen for the coordinator's current mode.
+- (void)applyMode;
 /// Ends any in-progress edit in the inspector so it is saved before the selection changes.
 - (void)commitPendingEdits;
 @end

@@ -73,6 +73,8 @@ NSString *AccountFormatMoney(NSNumber *_Nullable amount, NSString *_Nullable cur
 @property (nonatomic, copy, null_resettable) NSString *notes;
 /// Client authorization link remembered for this account; empty means "use the default link".
 @property (nonatomic, copy, null_resettable) NSString *authURL;
+/// Proxy for this account's pages ("http://host:port", "socks5://host:port"); empty means the app default.
+@property (nonatomic, copy, null_resettable) NSString *proxy;
 @property (nonatomic, strong, nullable) NSDate *createdAt;
 @property (nonatomic, strong, nullable) NSDate *lastUsedAt;
 @property (nonatomic, strong, nullable) NSNumber *signedIn;

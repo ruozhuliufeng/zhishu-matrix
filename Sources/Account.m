@@ -202,7 +202,7 @@ NSDate *AccountDateFromDayString(NSString *day) {
 
 static NSArray<NSString *> *KnownKeys(void) {
     return @[@"id", @"name", @"email", @"plan", @"planSource", @"expiresAt", @"expirySource", @"autoRenew",
-             @"monthlyPrice", @"currency", @"group", @"tags", @"notes", @"authURL", @"createdAt", @"lastUsedAt",
+             @"monthlyPrice", @"currency", @"group", @"tags", @"notes", @"authURL", @"proxy", @"createdAt", @"lastUsedAt",
              @"signedIn", @"usage"];
 }
 
@@ -238,6 +238,7 @@ static NSArray<NSString *> *KnownKeys(void) {
         _tags = AccountNormalizedTags(dictionary[@"tags"]);
         _notes = StringOrNil(dictionary[@"notes"]) ?: @"";
         _authURL = Trimmed(StringOrNil(dictionary[@"authURL"]));
+        _proxy = Trimmed(StringOrNil(dictionary[@"proxy"]));
         _createdAt = TimestampOrNil(dictionary[@"createdAt"]);
         _lastUsedAt = TimestampOrNil(dictionary[@"lastUsedAt"]);
         id signedIn = dictionary[@"signedIn"];
@@ -254,6 +255,7 @@ static NSArray<NSString *> *KnownKeys(void) {
 - (void)setGroup:(NSString *)group { _group = [Trimmed(group) copy]; }
 - (void)setNotes:(NSString *)notes { _notes = [notes ?: @"" copy]; }
 - (void)setAuthURL:(NSString *)authURL { _authURL = [Trimmed(authURL) copy]; }
+- (void)setProxy:(NSString *)proxy { _proxy = [Trimmed(proxy) copy]; }
 - (void)setCurrency:(NSString *)currency { _currency = [Trimmed(currency).uppercaseString copy]; }
 - (void)setTags:(NSArray<NSString *> *)tags { _tags = AccountNormalizedTags(tags); }
 
@@ -277,6 +279,7 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (self.tags.count) dictionary[@"tags"] = self.tags;
     if (self.notes.length) dictionary[@"notes"] = self.notes;
     if (self.authURL.length) dictionary[@"authURL"] = self.authURL;
+    if (self.proxy.length) dictionary[@"proxy"] = self.proxy;
     if (self.createdAt) dictionary[@"createdAt"] = [TimestampFormatter() stringFromDate:self.createdAt];
     if (self.lastUsedAt) dictionary[@"lastUsedAt"] = [TimestampFormatter() stringFromDate:self.lastUsedAt];
     if (self.signedIn) dictionary[@"signedIn"] = self.signedIn;
@@ -288,6 +291,12 @@ static NSArray<NSString *> *KnownKeys(void) {
     // Login state, usage and usage time describe this Mac's session, not the account.
     NSMutableDictionary *dictionary = [[self dictionaryRepresentation] mutableCopy];
     [dictionary removeObjectsForKeys:@[@"lastUsedAt", @"signedIn", @"usage"]];
+    // Exports and backups may leave this Mac, so a proxy password stays behind.
+    NSURLComponents *proxy = self.proxy.length ? [NSURLComponents componentsWithString:self.proxy] : nil;
+    if (proxy.password.length) {
+        proxy.password = nil;
+        dictionary[@"proxy"] = proxy.string ?: @"";
+    }
     return dictionary;
 }
 
@@ -302,6 +311,7 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (other.tags.count) self.tags = [self.tags arrayByAddingObjectsFromArray:other.tags];
     if (other.notes.length) self.notes = other.notes;
     if (other.authURL.length) self.authURL = other.authURL;
+    if (other.proxy.length) self.proxy = other.proxy;
     if (other.createdAt && (!self.createdAt || [other.createdAt compare:self.createdAt] == NSOrderedAscending))
         self.createdAt = other.createdAt;
 }

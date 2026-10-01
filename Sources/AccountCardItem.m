@@ -66,6 +66,7 @@
 @property (nonatomic, strong) NSTextField *detailLabel;
 @property (nonatomic, strong) DeskPillView *planPill;
 @property (nonatomic, strong) DeskTagsView *tagsView;
+@property (nonatomic, strong) DeskPillView *statusBadge;
 @property (nonatomic, strong) DeskQuotaRow *shortRow;
 @property (nonatomic, strong) DeskQuotaRow *longRow;
 @property (nonatomic, strong) NSTextField *usageNote;
@@ -125,6 +126,7 @@
     self.planPill = [DeskPillView new];
     NSButton *more = DeskIconButton(@"ellipsis.circle", @"更多操作", self, @selector(showMore:));
     self.tagsView = [DeskTagsView new];
+    self.statusBadge = [DeskPillView new];
     self.shortRow = [DeskQuotaRow new];
     self.longRow = [DeskQuotaRow new];
     self.usageNote = DeskLabel(@"", 11, NSFontWeightRegular);
@@ -152,7 +154,7 @@
     self.updatedLabel.alignment = NSTextAlignmentRight;
     [self.updatedLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    for (NSView *view in @[self.avatar, self.nameLabel, self.detailLabel, self.planPill, more, self.tagsView, self.shortRow,
+    for (NSView *view in @[self.avatar, self.nameLabel, self.detailLabel, self.planPill, more, self.tagsView, self.statusBadge, self.shortRow,
                            self.longRow, self.usageNote, separator, self.renewalLabel, self.priceLabel, open, authorize,
                            self.refreshButton, self.spinner, self.updatedLabel]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
@@ -177,8 +179,10 @@
 
         [self.tagsView.topAnchor constraintEqualToAnchor:self.avatar.bottomAnchor constant:10],
         [self.tagsView.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:inset],
-        [self.tagsView.trailingAnchor constraintLessThanOrEqualToAnchor:card.trailingAnchor constant:-inset],
+        [self.tagsView.trailingAnchor constraintLessThanOrEqualToAnchor:self.statusBadge.leadingAnchor constant:-8],
         [self.tagsView.heightAnchor constraintEqualToConstant:17],
+        [self.statusBadge.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-inset],
+        [self.statusBadge.centerYAnchor constraintEqualToAnchor:self.tagsView.centerYAnchor],
 
         [self.shortRow.topAnchor constraintEqualToAnchor:self.tagsView.bottomAnchor constant:12],
         [self.shortRow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:inset],
@@ -218,7 +222,7 @@
     ((AccountCardView *)self.view).selected = selected;
 }
 
-- (void)configureWithAccount:(Account *)account refreshing:(BOOL)refreshing now:(NSDate *)now {
+- (void)configureWithAccount:(Account *)account status:(AccountStatus *)status busy:(BOOL)refreshing now:(NSDate *)now {
     (void)self.view;
     self.accountID = account.identifier;
     self.avatar.name = account.name;
@@ -228,10 +232,9 @@
     self.nameLabel.toolTip = account.name;
     NSMutableArray *detail = [NSMutableArray array];
     if (account.email.length) [detail addObject:account.email];
-    if (account.signedIn) [detail addObject:account.signedIn.boolValue ? @"已登录" : @"未登录"];
     if (account.group.length) [detail addObject:account.group];
     self.detailLabel.stringValue = detail.count ? [detail componentsJoinedByString:@" · "] : @"未填写邮箱";
-    self.detailLabel.textColor = account.signedIn && !account.signedIn.boolValue ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    [self.statusBadge showStatus:status showsNormal:NO];
     self.planPill.text = account.plan ?: @"未获取";
     self.planPill.tintColor = DeskColorForPlan(account.planFamily);
     self.tagsView.tags = account.tags;

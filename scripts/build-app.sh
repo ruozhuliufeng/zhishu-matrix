@@ -9,7 +9,8 @@ if [[ ! -f Resources/AppIcon.icns || Resources/AppIcon-source.png -nt Resources/
     zsh scripts/build-icon.sh
 fi
 clang -fobjc-arc -mmacosx-version-min=14.0 -O2 -Wall \
-    -framework Cocoa -framework WebKit -framework UniformTypeIdentifiers \
+    -framework Cocoa -framework WebKit -framework UniformTypeIdentifiers -framework Network \
+    -framework Security -framework LocalAuthentication -framework UserNotifications \
     Sources/*.m -o "build/$EXECUTABLE"
 
 APP_DIR="$PWD/build/$APP_NAME.app"

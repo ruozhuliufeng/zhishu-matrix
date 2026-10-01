@@ -1,5 +1,6 @@
 #import "AccountSidebarController.h"
 #import "Account.h"
+#import "AccountInsights.h"
 #import "DeskUI.h"
 
 static NSPasteboardType const AccountRowPasteboardType = @"local.zhishu.chatgpt-account-desk.account-row";
@@ -13,7 +14,7 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
 @property (nonatomic, strong) DeskPillView *pill;
 @property (nonatomic, strong) DeskQuotaBar *quotaBar;
 @property (nonatomic, strong) NSColor *detailColor;
-- (void)configureWithAccount:(Account *)account now:(NSDate *)now;
+- (void)configureWithAccount:(Account *)account status:(AccountStatus *)status now:(NSDate *)now;
 @end
 
 @implementation AccountSidebarCell
@@ -54,10 +55,11 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
     return self;
 }
 
-- (void)configureWithAccount:(Account *)account now:(NSDate *)now {
+- (void)configureWithAccount:(Account *)account status:(AccountStatus *)status now:(NSDate *)now {
     self.avatar.name = account.name;
     self.avatar.seed = account.identifier;
-    self.avatar.statusColor = account.signedIn.boolValue ? NSColor.systemGreenColor : nil;
+    BOOL attention = status.tone == AccountStatusToneCritical || status.tone == AccountStatusToneWarning;
+    self.avatar.statusColor = attention ? DeskColorForTone(status.tone) : (account.signedIn.boolValue ? NSColor.systemGreenColor : nil);
     self.nameLabel.stringValue = account.name;
     self.pill.text = account.plan ?: @"";
     self.pill.tintColor = DeskColorForPlan(account.plan);
@@ -68,21 +70,22 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
     AccountExpiryState state = [account expiryStateFromDate:now];
     NSString *detail = nil;
     NSColor *color = NSColor.secondaryLabelColor;
-    if (state == AccountExpiryStateExpired || state == AccountExpiryStateExpiringSoon) {
-        detail = [account expiryDescriptionFromDate:now];
-        color = DeskColorForExpiry(state);
-    } else if (account.signedIn && !account.signedIn.boolValue) {
-        detail = @"未登录";
-    } else if (account.usage.windows.count) {
-        NSMutableArray *parts = [NSMutableArray array];
-        if (account.usage.longWindow) [parts addObject:[NSString stringWithFormat:@"周剩 %.0f%%", account.usage.longWindow.remainingPercent]];
-        if (account.usage.shortWindow) [parts addObject:[NSString stringWithFormat:@"5 小时剩 %.0f%%", account.usage.shortWindow.remainingPercent]];
-        detail = [parts componentsJoinedByString:@" · "];
-        NSNumber *lowest = account.usage.lowestRemainingPercent;
-        if (lowest.doubleValue < 20) color = NSColor.systemRedColor;
+    NSMutableArray *quota = [NSMutableArray array];
+    if (account.usage.longWindow) [quota addObject:[NSString stringWithFormat:@"周剩 %.0f%%", account.usage.longWindow.remainingPercent]];
+    if (account.usage.shortWindow) [quota addObject:[NSString stringWithFormat:@"5 小时剩 %.0f%%", account.usage.shortWindow.remainingPercent]];
+    if (status.kind == AccountStatusQuotaLow && quota.count) {
+        detail = [quota componentsJoinedByString:@" · "];
+        color = DeskColorForTone(status.tone);
+    } else if (attention) {
+        detail = status.kind == AccountStatusExpiringSoon || status.kind == AccountStatusExpired
+            ? [account expiryDescriptionFromDate:now] : status.title;
+        color = DeskColorForTone(status.tone);
+    } else if (quota.count) {
+        detail = [quota componentsJoinedByString:@" · "];
+        if (status.kind == AccountStatusRecommended) detail = [@"推荐 · " stringByAppendingString:detail];
     } else if (account.email.length) {
         detail = account.email;
-    } else if (state == AccountExpiryStateActive) {
+    } else if (state == AccountExpiryStateActive || state == AccountExpiryStateRenewing) {
         detail = [account expiryDescriptionFromDate:now];
     } else {
         detail = account.plan ? @"未设置到期日期" : @"未获取订阅信息";
@@ -332,7 +335,10 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
         cell = [[AccountSidebarCell alloc] initWithFrame:NSZeroRect];
         cell.identifier = AccountCellIdentifier;
     }
-    [cell configureWithAccount:item now:NSDate.date];
+    Account *account = item;
+    AccountStatus *status = [AccountStatus statusForAccount:account
+        recommended:[self.coordinator.recommendedAccountID isEqualToString:account.identifier] now:NSDate.date];
+    [cell configureWithAccount:account status:status now:NSDate.date];
     return cell;
 }
 

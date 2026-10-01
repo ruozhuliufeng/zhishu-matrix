@@ -5,8 +5,15 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// NSUserDefaults key: release background account pages unused for this many minutes (0 = never).
+extern NSString *const ReleaseIdlePagesMinutesDefaultsKey;
+
 @interface MainWindowController : NSWindowController <AccountCoordinator>
 @property (nonatomic, readonly) AccountRefresher *refresher;
+/// While the app is locked every menu and toolbar action is disabled.
+@property (nonatomic) BOOL locked;
+/// Called before login data of these accounts is cleared on purpose.
+@property (nonatomic, copy, nullable) void (^loginDataCleared)(NSArray<NSString *> *identifiers);
 - (instancetype)initWithStore:(AccountStore *)store;
 - (void)showError:(NSString *)title detail:(nullable NSString *)detail;
 - (void)prepareForTermination;
@@ -33,6 +40,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)refreshSelectedUsage:(nullable id)sender;
 - (IBAction)addTagsToSelected:(nullable id)sender;
 - (IBAction)readBillingForSelected:(nullable id)sender;
+- (IBAction)openBillingPageForSelected:(nullable id)sender;
 @end
 
 NS_ASSUME_NONNULL_END

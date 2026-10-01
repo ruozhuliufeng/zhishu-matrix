@@ -1,7 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import "AccountCoordinator.h"
 
-@class Account, AccountUsageWindow;
+@class Account, AccountStatus, AccountUsageWindow;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -15,7 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, weak, nullable) id<AccountCoordinator> coordinator;
 /// The accounts a right-click or the "…" menu acts on (the selection when this card is part of it).
 @property (nonatomic, copy, nullable) NSArray<NSString *> *_Nonnull (^menuAccountIDs)(NSString *accountID);
-- (void)configureWithAccount:(Account *)account refreshing:(BOOL)refreshing now:(NSDate *)now;
+- (void)configureWithAccount:(Account *)account status:(AccountStatus *)status busy:(BOOL)busy now:(NSDate *)now;
 @end
 
 NS_ASSUME_NONNULL_END

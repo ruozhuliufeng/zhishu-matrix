@@ -1,10 +1,29 @@
 #import "AccountInspectorController.h"
 #import "Account.h"
 #import "AccountCardItem.h"
+#import "AccountInsights.h"
 #import "AuthorizationLink.h"
 #import "DeskUI.h"
+#import "NetworkProxy.h"
 
 static NSString *const UnknownPlanTitle = @"未获取";
+
+/// Sections collapsed when nothing was saved yet for a mode: management favours the overview, browsing the essentials.
+static NSArray<NSString *> *DefaultCollapsedSections(DeskMode mode) {
+    return mode == DeskModeManagement ? @[@"auth", @"network", @"notes", @"record"] : @[@"network", @"record"];
+}
+
+static NSString *CollapsedDefaultsKey(DeskMode mode) {
+    return mode == DeskModeManagement ? @"inspectorCollapsed.management" : @"inspectorCollapsed.browser";
+}
+
+static NSString *ShortDateTime(NSDate *date) {
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+    formatter.dateFormat = [NSCalendar.currentCalendar isDateInToday:date] ? @"今天 HH:mm"
+        : ([NSCalendar.currentCalendar isDateInTomorrow:date] ? @"明天 HH:mm" : @"M月d日 HH:mm");
+    return [formatter stringFromDate:date];
+}
 
 static NSString *SourceName(NSString *source, id value) {
     if (!value) return @"未获取";
@@ -28,7 +47,19 @@ static NSString *SourceName(NSString *source, id value) {
 @property (nonatomic, strong) NSTextField *subtitleLabel;
 @property (nonatomic, strong) DeskPillView *planPill;
 @property (nonatomic, strong) DeskPillView *expiryPill;
-@property (nonatomic, strong) DeskPillView *loginPill;
+@property (nonatomic, strong) DeskPillView *statusPill;
+@property (nonatomic, strong) NSTextField *duplicateLabel;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSStackView *> *sectionBodies;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSButton *> *sectionHeaders;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSTextField *> *sectionSummaries;
+@property (nonatomic, strong) DeskSparklineView *sparkline;
+@property (nonatomic, strong) NSTextField *trendCaption;
+@property (nonatomic, strong) NSTextField *predictionLabel;
+@property (nonatomic, strong) NSButton *billingButton;
+@property (nonatomic, strong) NSProgressIndicator *billingSpinner;
+@property (nonatomic, strong) NSTextField *proxyField;
+@property (nonatomic, strong) NSTextField *proxyResult;
+@property (nonatomic, strong) NSButton *proxyTestButton;
 
 @property (nonatomic, strong) NSTextField *nameField;
 @property (nonatomic, strong) NSTextField *emailField;
@@ -55,7 +86,12 @@ static NSString *SourceName(NSString *source, id value) {
 @implementation AccountInspectorController
 
 - (instancetype)initWithCoordinator:(id<AccountCoordinator>)coordinator {
-    if ((self = [super initWithNibName:nil bundle:nil])) _coordinator = coordinator;
+    if ((self = [super initWithNibName:nil bundle:nil])) {
+        _coordinator = coordinator;
+        _sectionBodies = [NSMutableDictionary dictionary];
+        _sectionHeaders = [NSMutableDictionary dictionary];
+        _sectionSummaries = [NSMutableDictionary dictionary];
+    }
     return self;
 }
 
@@ -73,10 +109,79 @@ static NSString *SourceName(NSString *source, id value) {
     return field;
 }
 
-- (NSTextField *)sectionTitle:(NSString *)title {
-    NSTextField *label = DeskLabel(title, 12, NSFontWeightSemibold);
-    label.textColor = NSColor.labelColor;
-    return label;
+/// A collapsible section: a separator, a clickable header with a one-line summary, and its fields.
+- (NSView *)sectionWithID:(NSString *)identifier title:(NSString *)title views:(NSArray<NSView *> *)views {
+    NSButton *header = [NSButton buttonWithTitle:title target:self action:@selector(toggleSection:)];
+    header.bordered = NO;
+    header.imagePosition = NSImageLeading;
+    header.alignment = NSTextAlignmentLeft;
+    header.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+    header.identifier = identifier;
+    header.imageHugsTitle = YES;
+    [header setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSTextField *summary = DeskLabel(@"", 11, NSFontWeightRegular);
+    summary.textColor = NSColor.tertiaryLabelColor;
+    summary.alignment = NSTextAlignmentRight;
+    [summary setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *headerRow = [NSStackView stackViewWithViews:@[header, summary]];
+    headerRow.spacing = 8;
+    headerRow.distribution = NSStackViewDistributionFill;
+
+    NSStackView *body = [NSStackView new];
+    body.orientation = NSUserInterfaceLayoutOrientationVertical;
+    body.alignment = NSLayoutAttributeLeading;
+    body.spacing = 10;
+    for (NSView *view in views) {
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        [body addArrangedSubview:view];
+        [view.widthAnchor constraintEqualToAnchor:body.widthAnchor].active = YES;
+    }
+    NSBox *separator = DeskSeparator();
+    NSStackView *section = [NSStackView stackViewWithViews:@[separator, headerRow, body]];
+    section.orientation = NSUserInterfaceLayoutOrientationVertical;
+    section.alignment = NSLayoutAttributeLeading;
+    section.spacing = 10;
+    for (NSView *view in @[separator, headerRow, body]) {
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        [view.widthAnchor constraintEqualToAnchor:section.widthAnchor].active = YES;
+    }
+    self.sectionBodies[identifier] = body;
+    self.sectionHeaders[identifier] = header;
+    self.sectionSummaries[identifier] = summary;
+    return section;
+}
+
+- (NSSet<NSString *> *)collapsedSections {
+    DeskMode mode = self.coordinator.mode;
+    NSArray *saved = [NSUserDefaults.standardUserDefaults arrayForKey:CollapsedDefaultsKey(mode)];
+    return [NSSet setWithArray:saved ?: DefaultCollapsedSections(mode)];
+}
+
+- (void)applyMode {
+    if (!self.isViewLoaded) return;
+    NSSet *collapsed = self.collapsedSections;
+    [self.sectionBodies enumerateKeysAndObjectsUsingBlock:^(NSString *identifier, NSStackView *body, BOOL *stop) {
+        BOOL hidden = [collapsed containsObject:identifier];
+        body.hidden = hidden;
+        self.sectionHeaders[identifier].image = [NSImage imageWithSystemSymbolName:hidden ? @"chevron.right" : @"chevron.down"
+            accessibilityDescription:hidden ? @"展开" : @"折叠"];
+        self.sectionHeaders[identifier].toolTip = hidden ? @"展开" : @"折叠";
+        self.sectionSummaries[identifier].hidden = !hidden;
+    }];
+}
+
+- (void)toggleSection:(NSButton *)sender {
+    NSMutableSet *collapsed = [self.collapsedSections mutableCopy];
+    if ([collapsed containsObject:sender.identifier]) [collapsed removeObject:sender.identifier];
+    else [collapsed addObject:sender.identifier];
+    [self commitPendingEdits];
+    [NSUserDefaults.standardUserDefaults setObject:collapsed.allObjects forKey:CollapsedDefaultsKey(self.coordinator.mode)];
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = 0.18;
+        context.allowsImplicitAnimation = YES;
+        [self applyMode];
+        [self.view layoutSubtreeIfNeeded];
+    }];
 }
 
 - (void)loadView {
@@ -118,10 +223,13 @@ static NSString *SourceName(NSString *source, id value) {
     header.spacing = 12;
     header.alignment = NSLayoutAttributeCenterY;
     self.planPill = [DeskPillView new];
+    self.statusPill = [DeskPillView new];
     self.expiryPill = [DeskPillView new];
-    self.loginPill = [DeskPillView new];
-    NSStackView *pills = [NSStackView stackViewWithViews:@[self.planPill, self.expiryPill, self.loginPill]];
+    NSStackView *pills = [NSStackView stackViewWithViews:@[self.planPill, self.statusPill, self.expiryPill]];
     pills.spacing = 6;
+    self.duplicateLabel = [NSTextField wrappingLabelWithString:@""];
+    self.duplicateLabel.font = [NSFont systemFontOfSize:11];
+    self.duplicateLabel.textColor = NSColor.systemOrangeColor;
 
     // Profile
     self.nameField = [NSTextField new];
@@ -156,6 +264,18 @@ static NSString *SourceName(NSString *source, id value) {
     self.refreshSpinner.displayedWhenStopped = NO;
     NSStackView *refreshRow = [NSStackView stackViewWithViews:@[self.refreshButton, self.refreshSpinner]];
     refreshRow.spacing = 8;
+    self.trendCaption = DeskLabel(@"", 11, NSFontWeightRegular);
+    NSMutableAttributedString *legend = [[NSMutableAttributedString alloc] initWithString:@"近 7 天剩余额度　"
+        attributes:@{NSForegroundColorAttributeName: NSColor.secondaryLabelColor, NSFontAttributeName: [NSFont systemFontOfSize:11]}];
+    [legend appendAttributedString:[[NSAttributedString alloc] initWithString:@"━ 每周　" attributes:@{
+        NSForegroundColorAttributeName: NSColor.systemIndigoColor, NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium]}]];
+    [legend appendAttributedString:[[NSAttributedString alloc] initWithString:@"━ 5 小时" attributes:@{
+        NSForegroundColorAttributeName: NSColor.systemTealColor, NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium]}]];
+    self.trendCaption.attributedStringValue = legend;
+    self.sparkline = [DeskSparklineView new];
+    [self.sparkline.heightAnchor constraintEqualToConstant:44].active = YES;
+    self.predictionLabel = [NSTextField wrappingLabelWithString:@""];
+    self.predictionLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
 
     // Subscription
     self.planPicker = [NSPopUpButton new];
@@ -206,8 +326,33 @@ static NSString *SourceName(NSString *source, id value) {
     priceRow.spacing = 8;
     [self.priceField setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [self.currencyBox.widthAnchor constraintEqualToConstant:84].active = YES;
-    NSButton *syncButton = DeskButton(@"从账单页读取档位与月费", @"creditcard", self, @selector(readBilling:));
-    syncButton.toolTip = @"打开此账号 ChatGPT 的“设置 → 账单”，读取 Pro 档位、续订日期和最近一次扣款金额";
+    self.billingButton = DeskButton(@"读取账单（档位与月费）", @"creditcard", self, @selector(readBilling:));
+    self.billingButton.toolTip = @"在后台打开此账号 ChatGPT 的“设置 → 账单”，读取 Pro 档位、续订日期和最近一次扣款金额";
+    self.billingSpinner = [NSProgressIndicator new];
+    self.billingSpinner.style = NSProgressIndicatorStyleSpinning;
+    self.billingSpinner.controlSize = NSControlSizeSmall;
+    self.billingSpinner.displayedWhenStopped = NO;
+    NSButton *billingPage = [NSButton buttonWithTitle:@"打开账单页" target:self action:@selector(openBillingPage:)];
+    billingPage.bordered = NO;
+    billingPage.font = [NSFont systemFontOfSize:11];
+    billingPage.contentTintColor = NSColor.linkColor;
+    billingPage.toolTip = @"在浏览模式中打开此账号的账单设置";
+    NSStackView *syncButton = [NSStackView stackViewWithViews:@[self.billingButton, self.billingSpinner, billingPage]];
+    syncButton.spacing = 8;
+
+    // Network
+    self.proxyField = [NSTextField new];
+    self.proxyField.delegate = self;
+    self.proxyField.font = [NSFont monospacedSystemFontOfSize:11.5 weight:NSFontWeightRegular];
+    self.proxyTestButton = DeskButton(@"测试连接", @"network", self, @selector(testProxy:));
+    self.proxyTestButton.toolTip = @"通过此代理访问 chatgpt.com，显示出口 IP 和地区";
+    self.proxyResult = [NSTextField wrappingLabelWithString:@""];
+    self.proxyResult.font = [NSFont systemFontOfSize:11];
+    self.proxyResult.textColor = NSColor.secondaryLabelColor;
+    NSTextField *proxyHint = [NSTextField wrappingLabelWithString:
+        @"填写 http://主机:端口 或 socks5://主机:端口，只作用于此账号的页面、用量读取和授权窗口。留空使用设置中的默认代理。"];
+    proxyHint.font = [NSFont systemFontOfSize:11];
+    proxyHint.textColor = NSColor.secondaryLabelColor;
 
     // Client authorization
     self.authField = [NSTextField new];
@@ -248,31 +393,25 @@ static NSString *SourceName(NSString *source, id value) {
     deleteButton.contentTintColor = NSColor.systemRedColor;
 
     NSArray<NSView *> *fullWidth = @[
-        DeskSeparator(),
-        [self sectionTitle:@"用量"],
-        self.shortRow, self.longRow, self.usageLabel, refreshRow,
-        DeskSeparator(),
-        [self sectionTitle:@"资料"],
-        [self fieldWithCaption:@"名称" control:self.nameField],
-        [self fieldWithCaption:@"邮箱" control:self.emailField],
-        [self fieldWithCaption:@"分组" control:self.groupBox],
-        [self fieldWithCaption:@"标签" control:self.tagsField],
-        DeskSeparator(),
-        [self sectionTitle:@"订阅"],
-        [self fieldWithCaption:@"级别" control:self.planPicker],
-        self.dateToggle, dateRow, self.autoRenewToggle,
-        [self fieldWithCaption:@"月费" control:priceRow],
-        self.sourceLabel, syncButton,
-        DeskSeparator(),
-        [self sectionTitle:@"客户端授权"],
-        [self fieldWithCaption:@"授权链接" control:self.authField],
-        authButton, authHint,
-        DeskSeparator(),
-        [self sectionTitle:@"备注"],
-        notesScroll,
-        DeskSeparator(),
-        [self sectionTitle:@"记录"],
-        self.recordLabel,
+        self.duplicateLabel,
+        [self sectionWithID:@"usage" title:@"用量" views:@[self.shortRow, self.longRow, self.trendCaption, self.sparkline,
+            self.predictionLabel, self.usageLabel, refreshRow]],
+        [self sectionWithID:@"profile" title:@"资料" views:@[
+            [self fieldWithCaption:@"名称" control:self.nameField],
+            [self fieldWithCaption:@"邮箱" control:self.emailField],
+            [self fieldWithCaption:@"分组" control:self.groupBox],
+            [self fieldWithCaption:@"标签" control:self.tagsField]]],
+        [self sectionWithID:@"subscription" title:@"订阅" views:@[
+            [self fieldWithCaption:@"级别" control:self.planPicker],
+            self.dateToggle, dateRow, self.autoRenewToggle,
+            [self fieldWithCaption:@"月费" control:priceRow],
+            self.sourceLabel, syncButton]],
+        [self sectionWithID:@"network" title:@"网络" views:@[
+            [self fieldWithCaption:@"代理" control:self.proxyField], self.proxyTestButton, self.proxyResult, proxyHint]],
+        [self sectionWithID:@"auth" title:@"客户端授权" views:@[
+            [self fieldWithCaption:@"授权链接" control:self.authField], authButton, authHint]],
+        [self sectionWithID:@"notes" title:@"备注" views:@[notesScroll]],
+        [self sectionWithID:@"record" title:@"记录" views:@[self.recordLabel]],
         DeskSeparator(),
         sessionButton, clearButton, deleteButton
     ];
@@ -285,13 +424,15 @@ static NSString *SourceName(NSString *source, id value) {
     }
     [header.widthAnchor constraintLessThanOrEqualToAnchor:stack.widthAnchor constant:-32].active = YES;
     [stack setCustomSpacing:10 afterView:header];
-    [stack setCustomSpacing:4 afterView:self.dateToggle];
-    [stack setCustomSpacing:8 afterView:self.shortRow];
-    [stack setCustomSpacing:8 afterView:self.longRow];
-    [stack setCustomSpacing:6 afterView:self.sourceLabel];
-    [stack setCustomSpacing:6 afterView:authButton];
     [stack setCustomSpacing:6 afterView:sessionButton];
     [stack setCustomSpacing:6 afterView:clearButton];
+    NSStackView *usageBody = self.sectionBodies[@"usage"];
+    [usageBody setCustomSpacing:8 afterView:self.shortRow];
+    [usageBody setCustomSpacing:4 afterView:self.trendCaption];
+    [self.sectionBodies[@"subscription"] setCustomSpacing:4 afterView:self.dateToggle];
+    [self.sectionBodies[@"subscription"] setCustomSpacing:6 afterView:self.sourceLabel];
+    [self.sectionBodies[@"auth"] setCustomSpacing:6 afterView:authButton];
+    [self.sectionBodies[@"network"] setCustomSpacing:4 afterView:self.proxyTestButton];
 
     // Placeholder for no / multiple selection
     NSImageView *placeholderIcon = [NSImageView imageViewWithImage:
@@ -324,6 +465,7 @@ static NSString *SourceName(NSString *source, id value) {
         [self.placeholder.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
         [self.placeholder.centerYAnchor constraintEqualToAnchor:root.centerYAnchor]
     ]];
+    [self applyMode];
     [self reloadAccount];
 }
 
@@ -331,7 +473,10 @@ static NSString *SourceName(NSString *source, id value) {
 
 - (void)showAccountID:(NSString *)identifier selectionCount:(NSUInteger)count {
     BOOL sameAccount = identifier == self.accountID || [identifier isEqualToString:self.accountID];
-    if (!sameAccount) [self commitPendingEdits];
+    if (!sameAccount) {
+        [self commitPendingEdits];
+        self.proxyResult.stringValue = @"";
+    }
     self.accountID = identifier;
     self.selectionCount = count;
     [self reloadAccount];
@@ -359,16 +504,26 @@ static NSString *SourceName(NSString *source, id value) {
     NSDate *now = NSDate.date;
     self.avatar.name = account.name;
     self.avatar.seed = account.identifier;
-    self.avatar.statusColor = account.signedIn.boolValue ? NSColor.systemGreenColor : nil;
+    AccountStatus *status = [AccountStatus statusForAccount:account
+        recommended:[self.coordinator.recommendedAccountID isEqualToString:account.identifier] now:now];
+    BOOL attention = status.tone == AccountStatusToneCritical || status.tone == AccountStatusToneWarning;
+    self.avatar.statusColor = attention ? DeskColorForTone(status.tone) : (account.signedIn.boolValue ? NSColor.systemGreenColor : nil);
+    [self.statusPill showStatus:status showsNormal:NO];
+    if (status.kind == AccountStatusRefreshFailed) self.statusPill.toolTip = account.refreshError;
     self.titleLabel.stringValue = account.name;
     self.subtitleLabel.stringValue = account.email.length ? account.email : @"未填写邮箱";
     self.planPill.text = account.plan ?: @"未获取订阅";
     self.planPill.tintColor = DeskColorForPlan(account.plan);
     AccountExpiryState state = [account expiryStateFromDate:now];
-    self.expiryPill.text = [account expiryDescriptionFromDate:now];
+    self.expiryPill.text = state == AccountExpiryStateUnknown || status.kind == AccountStatusExpired ||
+        status.kind == AccountStatusExpiringSoon ? @"" : [account expiryDescriptionFromDate:now];
     self.expiryPill.tintColor = DeskColorForExpiry(state);
-    self.loginPill.text = account.signedIn ? (account.signedIn.boolValue ? @"已登录" : @"未登录") : @"";
-    self.loginPill.tintColor = account.signedIn.boolValue ? NSColor.systemGreenColor : NSColor.systemGrayColor;
+    NSArray<Account *> *twins = AccountDuplicateEmails(self.coordinator.store.accounts)[account.email.lowercaseString];
+    NSMutableArray *twinNames = [NSMutableArray array];
+    for (Account *twin in twins) if (twin != account) [twinNames addObject:[NSString stringWithFormat:@"“%@”", twin.name]];
+    self.duplicateLabel.hidden = twinNames.count == 0;
+    self.duplicateLabel.stringValue = twinNames.count
+        ? [NSString stringWithFormat:@"⚠︎ 此邮箱也用于 %@，可能是重复添加的账号", [twinNames componentsJoinedByString:@"、"]] : @"";
 
     if (![self isEditing:self.nameField]) self.nameField.stringValue = account.name;
     if (![self isEditing:self.emailField]) self.emailField.stringValue = account.email;
@@ -413,6 +568,56 @@ static NSString *SourceName(NSString *source, id value) {
     BOOL refreshing = [self.coordinator isRefreshingAccountID:account.identifier];
     self.refreshButton.enabled = !refreshing;
     if (refreshing) [self.refreshSpinner startAnimation:nil]; else [self.refreshSpinner stopAnimation:nil];
+    BOOL readingBilling = [self.coordinator isReadingBillingForAccountID:account.identifier];
+    self.billingButton.enabled = !readingBilling;
+    self.billingButton.title = readingBilling ? @"正在读取账单…" : @"读取账单（档位与月费）";
+    if (readingBilling) [self.billingSpinner startAnimation:nil]; else [self.billingSpinner stopAnimation:nil];
+
+    NSArray<NSDictionary *> *points = [self.coordinator usageHistoryForAccountID:account.identifier];
+    BOOL hasTrend = points.count >= 2;
+    self.sparkline.points = points;
+    self.sparkline.hidden = !hasTrend;
+    self.trendCaption.hidden = !hasTrend;
+    NSTimeInterval span = self.sparkline.span;
+    NSString *period = span >= 2 * 86400 ? [NSString stringWithFormat:@"近 %.0f 天", ceil(span / 86400)]
+                                         : [NSString stringWithFormat:@"近 %.0f 小时", ceil(span / 3600)];
+    NSMutableAttributedString *legend = [self.trendCaption.attributedStringValue mutableCopy];
+    NSRange label = [legend.string rangeOfString:@"剩余额度"];
+    if (label.location != NSNotFound)
+        [legend replaceCharactersInRange:NSMakeRange(0, label.location) withString:period];
+    self.trendCaption.attributedStringValue = legend;
+    NSString *prediction = nil;
+    NSColor *predictionColor = NSColor.secondaryLabelColor;
+    for (NSArray *candidate in @[@[@"long", usage.longWindow ?: [NSNull null]], @[@"short", usage.shortWindow ?: [NSNull null]]]) {
+        if (![candidate[1] isKindOfClass:AccountUsageWindow.class]) continue;
+        AccountUsageWindow *window = candidate[1];
+        NSDate *exhaustion = [UsageHistory predictedExhaustionOfWindow:window key:candidate[0] points:points now:now];
+        if (!exhaustion) continue;
+        prediction = [NSString stringWithFormat:@"按近期速度，%@额度约在 %@ 用完%@", window.title, ShortDateTime(exhaustion),
+            window.resetAt ? [NSString stringWithFormat:@"（%@重置）", ShortDateTime(window.resetAt)] : @""];
+        predictionColor = NSColor.systemOrangeColor;
+        break;
+    }
+    if (!prediction && hasTrend && hasUsage) prediction = @"按近期速度，额度可以用到重置";
+    self.predictionLabel.stringValue = prediction ?: @"";
+    self.predictionLabel.textColor = predictionColor;
+    self.predictionLabel.hidden = prediction == nil;
+
+    NSMutableArray *quotaSummary = [NSMutableArray array];
+    if (usage.longWindow) [quotaSummary addObject:[NSString stringWithFormat:@"周 %.0f%%", usage.longWindow.remainingPercent]];
+    if (usage.shortWindow) [quotaSummary addObject:[NSString stringWithFormat:@"5h %.0f%%", usage.shortWindow.remainingPercent]];
+    self.sectionSummaries[@"usage"].stringValue = [quotaSummary componentsJoinedByString:@" · "];
+    self.sectionSummaries[@"profile"].stringValue = account.group.length ? account.group : (account.email.length ? account.email : @"");
+    self.sectionSummaries[@"subscription"].stringValue = account.monthlyPrice
+        ? [NSString stringWithFormat:@"%@ · %@", account.planTitle, AccountFormatMoney(account.monthlyPrice, account.currency)] : account.planTitle;
+    self.sectionSummaries[@"auth"].stringValue = account.authURL.length ? @"已保存链接" : @"";
+    self.sectionSummaries[@"notes"].stringValue = [[account.notes componentsSeparatedByCharactersInSet:
+        NSCharacterSet.newlineCharacterSet] componentsJoinedByString:@" "];
+
+    NSString *defaultProxy = [NSUserDefaults.standardUserDefaults stringForKey:DefaultProxyDefaultsKey];
+    if (![self isEditing:self.proxyField]) self.proxyField.stringValue = account.proxy;
+    self.proxyField.placeholderString = defaultProxy.length ? [NSString stringWithFormat:@"使用默认代理 %@", defaultProxy] : @"跟随系统代理设置";
+    self.sectionSummaries[@"network"].stringValue = account.proxy.length ? account.proxy : (defaultProxy.length ? @"默认代理" : @"系统代理");
 
     NSString *login = account.signedIn ? (account.signedIn.boolValue ? @"已登录" : @"未登录") : @"未检测";
     self.recordLabel.stringValue = [NSString stringWithFormat:@"创建时间　%@\n最近使用　%@\n登录状态　%@",
@@ -453,6 +658,8 @@ static NSString *SourceName(NSString *source, id value) {
         [self groupChosen:self.groupBox];
     } else if (field == self.authField) {
         [self authLinkEdited];
+    } else if (field == self.proxyField) {
+        [self proxyEdited];
     } else if (field == self.tagsField) {
         NSArray *tags = AccountNormalizedTags(self.tagsField.objectValue);
         if ([tags isEqualToArray:account.tags]) return;
@@ -490,6 +697,53 @@ static NSString *SourceName(NSString *source, id value) {
 - (void)readBilling:(id)sender {
     [self commitPendingEdits];
     if (self.accountID) [self.coordinator readBillingForAccountID:self.accountID];
+}
+
+- (void)openBillingPage:(id)sender {
+    [self commitPendingEdits];
+    if (self.accountID) [self.coordinator openBillingPageForAccountID:self.accountID];
+}
+
+- (void)proxyEdited {
+    Account *account = [self account];
+    if (!account) return;
+    NSString *text = [self.proxyField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (text.length && !AccountProxyComponents(text)) {
+        NSBeep();
+        self.proxyResult.stringValue = @"无法识别代理地址，未保存。示例：http://127.0.0.1:7890、socks5://127.0.0.1:1080";
+        self.proxyResult.textColor = NSColor.systemRedColor;
+        self.proxyField.stringValue = account.proxy;
+        return;
+    }
+    self.proxyField.stringValue = text;
+    if ([text isEqualToString:account.proxy]) return;
+    account.proxy = text;
+    self.proxyResult.stringValue = @"已保存，此账号已打开的页面会重新载入。";
+    self.proxyResult.textColor = NSColor.secondaryLabelColor;
+    [self save];
+    [self.coordinator proxyDidChangeForAccountID:account.identifier];
+}
+
+- (void)testProxy:(id)sender {
+    [self commitPendingEdits];
+    Account *account = [self account];
+    if (!account) return;
+    NSString *identifier = account.identifier;
+    NSString *proxy = EffectiveProxyText(account);
+    self.proxyTestButton.enabled = NO;
+    self.proxyResult.textColor = NSColor.secondaryLabelColor;
+    self.proxyResult.stringValue = proxy.length ? [NSString stringWithFormat:@"正在通过 %@ 连接 chatgpt.com…", proxy]
+                                                : @"正在按系统代理设置连接 chatgpt.com…";
+    __weak typeof(self) weakSelf = self;
+    [ProxyCheck checkProxyText:proxy completion:^(NSString *summary, NSString *failure) {
+        AccountInspectorController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.proxyTestButton.enabled = YES;
+        if (![strongSelf.accountID isEqualToString:identifier]) return;
+        strongSelf.proxyResult.stringValue = summary ?: failure;
+        strongSelf.proxyResult.textColor = failure ? NSColor.systemRedColor
+            : ([summary containsString:@"不支持"] ? NSColor.systemOrangeColor : NSColor.systemGreenColor);
+    }];
 }
 
 - (NSArray *)tokenField:(NSTokenField *)tokenField completionsForSubstring:(NSString *)substring

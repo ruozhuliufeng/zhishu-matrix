@@ -25,8 +25,18 @@ typedef NS_ENUM(NSInteger, DeskMode) {
 - (void)exportAccountIDs:(nullable NSArray<NSString *> *)identifiers;
 - (void)promptAuthorizationForAccountID:(NSString *)identifier;
 - (void)promptTagsForAccountIDs:(NSArray<NSString *> *)identifiers;
-/// Opens the account's billing settings in the browser and reads the plan tier, renewal and price.
+/// Reads the plan tier, renewal and price from the account's billing settings in a hidden page.
 - (void)readBillingForAccountID:(NSString *)identifier;
+- (void)readBillingForAccountIDs:(NSArray<NSString *> *)identifiers;
+- (BOOL)isReadingBillingForAccountID:(NSString *)identifier;
+/// Opens the account's billing settings in the browser and reads them from the visible page.
+- (void)openBillingPageForAccountID:(NSString *)identifier;
+/// The account with the most quota left right now, if any.
+@property (nonatomic, readonly, nullable) NSString *recommendedAccountID;
+/// Usage history points {t, short, long} for trends.
+- (NSArray<NSDictionary *> *)usageHistoryForAccountID:(NSString *)identifier;
+/// Applies a changed per-account proxy to the account's pages.
+- (void)proxyDidChangeForAccountID:(NSString *)identifier;
 /// Reads usage limits and subscription renewal from ChatGPT for these accounts.
 - (void)refreshUsageForAccountIDs:(NSArray<NSString *> *)identifiers;
 - (BOOL)isRefreshingAccountID:(NSString *)identifier;
@@ -41,6 +51,8 @@ typedef NS_ENUM(NSInteger, DeskMode) {
 - (IBAction)refreshAllUsage:(nullable id)sender;
 - (IBAction)showBrowser:(nullable id)sender;
 - (IBAction)showManagement:(nullable id)sender;
+- (IBAction)exportRenewalCalendar:(nullable id)sender;
+- (IBAction)readAllBilling:(nullable id)sender;
 @end
 
 NS_ASSUME_NONNULL_END

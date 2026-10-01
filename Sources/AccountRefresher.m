@@ -191,5 +191,6 @@ static NSString *FailureMessage(NSInteger status) {
     if (email.length && !account.email.length) account.email = email;
     account.refreshError = IsSuccess(usageStatus) ? nil : FailureMessage(usageStatus);
     [_store commit];
+    if (IsSuccess(usageStatus) && account.usage && self.usageRead) self.usageRead(identifier);
 }
 @end
