@@ -13,6 +13,7 @@ typedef NS_ENUM(NSInteger, ManagementScopeKind) {
     ManagementScopeDuplicates,   // shares its email with another account
     ManagementScopeGroup,        // value: group name, "" = ungrouped
     ManagementScopeTag,          // value: tag
+    ManagementScopeSupplier,     // value: supplier, "" = not filled in
 };
 
 /// One entry of the management sidebar: a smart list, a group or a tag.

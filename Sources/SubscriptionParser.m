@@ -92,9 +92,71 @@ static NSDate *DateFromISOValue(id value) {
 
 #pragma mark - Billing page
 
+static NSString *const StoreManagedPattern =
+    @"(?:通过|在|由)\\s*(Apple|App Store|iOS|Google Play|Google)\\s*(?:中)?(?:管理|订阅|续订|付款)|"
+     "(?:managed|billed|purchased)\\s+(?:through|by|via|on|in)\\s+(?:the\\s+)?(Apple|App Store|iOS|Google Play|Google)";
+
 + (BOOL)isBillingText:(NSString *)text {
-    return text.length && Capture(@"(交易记录|账单信息|账单地址|更改套餐|管理订阅|Payment history|Invoices|Billing information|"
-        "Billing address|Manage subscription|Change plan)", text) != nil;
+    if (!text.length) return NO;
+    return Capture(@"(交易记录|账单信息|账单地址|更改套餐|管理订阅|Payment history|Invoices|Billing information|"
+        "Billing address|Manage subscription|Change plan)", text) != nil || Capture(StoreManagedPattern, text) != nil;
+}
+
++ (NSString *)supplierFromBillingText:(NSString *)text {
+    if (!text.length) return nil;
+    NSRegularExpression *expression = [NSRegularExpression regularExpressionWithPattern:StoreManagedPattern
+        options:NSRegularExpressionCaseInsensitive error:nil];
+    NSTextCheckingResult *match = [expression firstMatchInString:text options:0 range:NSMakeRange(0, text.length)];
+    if (!match) return nil;
+    NSRange store = [match rangeAtIndex:1].location != NSNotFound ? [match rangeAtIndex:1] : [match rangeAtIndex:2];
+    return [[text substringWithRange:store].lowercaseString hasPrefix:@"google"] ? @"Google Play" : @"iOS";
+}
+
++ (NSString *)cardLast4FromBillingText:(NSString *)text {
+    if (!text.length) return nil;
+    for (NSString *pattern in @[
+        @"(?:Visa|Mastercard|American Express|Amex|UnionPay|银联|JCB|Discover|Diners)[^\\n0-9]{0,16}?(?:[•·*xX]\\s*){2,}([0-9]{4})\\b",
+        @"(?:ending in|ends in|尾号|末四位|结尾为)\\s*([0-9]{4})\\b",
+        @"(?:[•*]\\s*){4,}([0-9]{4})\\b"]) {
+        NSString *digits = Capture(pattern, text);
+        if (digits) return digits;
+    }
+    return nil;
+}
+
++ (NSArray<NSDictionary *> *)paymentsFromBillingText:(NSString *)text {
+    if (!text.length) return @[];
+    // Only the payment history lists past charges; the renewal sentence above it has a date too.
+    NSRange heading = [text rangeOfString:@"(交易记录|付款记录|账单记录|账单历史|Payment history|Billing history|Invoices|Invoice history)"
+        options:NSRegularExpressionSearch | NSCaseInsensitiveSearch];
+    if (heading.location == NSNotFound) return @[];
+    NSArray<NSString *> *lines = [[text substringFromIndex:NSMaxRange(heading)] componentsSeparatedByCharactersInSet:
+        NSCharacterSet.newlineCharacterSet];
+    NSRegularExpression *datePattern = [NSRegularExpression regularExpressionWithPattern:DatePattern options:0 error:nil];
+    NSMutableArray<NSDictionary *> *payments = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    for (NSUInteger index = 0; index < lines.count; index++) {
+        NSString *line = lines[index];
+        NSTextCheckingResult *match = [datePattern firstMatchInString:line options:0 range:NSMakeRange(0, line.length)];
+        NSString *date = match ? [self normalizedDate:[line substringWithRange:match.range]] : nil;
+        if (!date) continue;
+        // A row is the dated line plus the following lines up to the next date.
+        NSMutableString *row = [[line substringFromIndex:NSMaxRange(match.range)] mutableCopy];
+        for (NSUInteger next = index + 1; next < MIN(lines.count, index + 5); next++) {
+            if ([datePattern firstMatchInString:lines[next] options:0 range:NSMakeRange(0, lines[next].length)]) break;
+            [row appendFormat:@"\n%@", lines[next]];
+        }
+        if (Capture(@"(失败|未支付|待支付|已退款|退款|已取消|作废|Failed|Unpaid|Refunded|Void|Declined)", row)) continue;
+        NSDictionary *price = [self priceFromBillingText:row];
+        if (!price) continue;
+        NSString *key = [NSString stringWithFormat:@"%@|%@|%@", date, price[@"amount"], price[@"currency"]];
+        if ([seen containsObject:key]) continue;
+        [seen addObject:key];
+        [payments addObject:@{@"date": date, @"amount": price[@"amount"], @"currency": price[@"currency"]}];
+    }
+    return [payments sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"date"] compare:a[@"date"]];
+    }];
 }
 
 + (NSString *)planFromBillingText:(NSString *)text {

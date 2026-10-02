@@ -26,6 +26,43 @@ NSDate *_Nullable AccountDateFromDayString(NSString *_Nullable day);
 NSArray<NSString *> *AccountNormalizedTags(id _Nullable tags);
 /// "PHP 8,919.64"; empty when the amount is missing.
 NSString *AccountFormatMoney(NSNumber *_Nullable amount, NSString *_Nullable currency);
+/// "¥1,115.00"; empty when the amount is missing.
+NSString *AccountFormatCNY(NSNumber *_Nullable amount);
+
+/// Suppliers offered in pickers; accounts can also use their own.
+NSArray<NSString *> *AccountSuppliers(void);
+/// Payment methods offered in pickers.
+NSArray<NSString *> *AccountPaymentMethods(void);
+/// The last four digits in `text` ("6222 **** 1234" → "1234"); empty when it has fewer than four digits.
+NSString *AccountCardLast4(NSString *_Nullable text);
+
+/// NSUserDefaults key: {currency code: CNY per unit}, edited by hand in Settings.
+extern NSString *const ExchangeRatesDefaultsKey;
+extern NSNotificationName const ExchangeRatesDidChangeNotification;
+/// The saved rates, always including CNY = 1.
+NSDictionary<NSString *, NSNumber *> *AccountExchangeRates(void);
+/// `amount` in CNY with these rates, or nil when the currency has no rate.
+NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nullable currency,
+    NSDictionary<NSString *, NSNumber *> *rates);
+
+/// One payment made for an account's subscription.
+@interface AccountPayment : NSObject
+@property (nonatomic, copy) NSString *identifier;
+/// "yyyy-MM-dd".
+@property (nonatomic, copy) NSString *date;
+@property (nonatomic, strong) NSNumber *amount;
+@property (nonatomic, copy, null_resettable) NSString *currency;
+@property (nonatomic, copy, null_resettable) NSString *supplier;
+@property (nonatomic, copy, null_resettable) NSString *paymentMethod;
+@property (nonatomic, copy, null_resettable) NSString *cardLast4;
+@property (nonatomic, copy, null_resettable) NSString *note;
+/// "manual" or "page" (read from the billing page).
+@property (nonatomic, copy, null_resettable) NSString *source;
+- (nullable instancetype)initWithDictionary:(NSDictionary *)dictionary;
+- (NSDictionary *)dictionaryRepresentation;
+/// Same day, amount and currency: the same charge read twice.
+- (BOOL)isSameChargeAs:(AccountPayment *)other;
+@end
 
 /// One rolling usage limit reported by ChatGPT, such as the 5-hour or weekly window.
 @interface AccountUsageWindow : NSObject
@@ -75,6 +112,14 @@ NSString *AccountFormatMoney(NSNumber *_Nullable amount, NSString *_Nullable cur
 @property (nonatomic, copy, null_resettable) NSString *authURL;
 /// Proxy for this account's pages ("http://host:port", "socks5://host:port"); empty means the app default.
 @property (nonatomic, copy, null_resettable) NSString *proxy;
+/// Where the subscription was bought: Google Play, iOS, a reseller…
+@property (nonatomic, copy, null_resettable) NSString *supplier;
+/// How it is paid: 信用卡, 支付宝…
+@property (nonatomic, copy, null_resettable) NSString *paymentMethod;
+/// Last four digits of the paying card; never more.
+@property (nonatomic, copy, null_resettable) NSString *cardLast4;
+/// Newest first.
+@property (nonatomic, copy, null_resettable) NSArray<AccountPayment *> *payments;
 @property (nonatomic, strong, nullable) NSDate *createdAt;
 @property (nonatomic, strong, nullable) NSDate *lastUsedAt;
 @property (nonatomic, strong, nullable) NSNumber *signedIn;
@@ -83,6 +128,9 @@ NSString *AccountFormatMoney(NSNumber *_Nullable amount, NSString *_Nullable cur
 @property (nonatomic, copy, nullable) NSString *refreshError;
 
 @property (nonatomic, readonly) NSString *planTitle;
+@property (nonatomic, readonly, nullable) AccountPayment *lastPayment;
+/// "Google Play · 尾号 1234"; empty when nothing is filled in.
+@property (nonatomic, readonly) NSString *paymentSummary;
 @property (nonatomic, readonly, nullable) NSString *planFamily;
 @property (nonatomic, readonly) BOOL isPaid;
 @property (nonatomic, readonly) NSInteger planRank;
@@ -104,6 +152,8 @@ NSString *AccountFormatMoney(NSNumber *_Nullable amount, NSString *_Nullable cur
 /// For narrow columns: "10/25 续费 · 24 天", "10/5 到期 · 4 天", "9/28 已过期"; empty when unknown.
 - (NSString *)compactRenewalDescriptionFromDate:(NSDate *)now;
 - (BOOL)matchesSearch:(nullable NSString *)query;
+/// Adds payments, skipping charges already recorded; returns how many were new.
+- (NSUInteger)addPayments:(NSArray<AccountPayment *> *)payments;
 @end
 
 @interface AccountStore : NSObject
@@ -126,8 +176,17 @@ NSString *AccountFormatMoney(NSNumber *_Nullable amount, NSString *_Nullable cur
 - (void)moveAccountsWithIDs:(NSArray<NSString *> *)identifiers toIndex:(NSUInteger)index;
 - (NSArray<NSString *> *)groups;
 - (NSArray<NSString *> *)tags;
+/// The default suppliers followed by any others in use.
+- (NSArray<NSString *> *)suppliers;
+/// The default payment methods followed by any others in use.
+- (NSArray<NSString *> *)paymentMethods;
 /// Sum of the monthly prices of paid accounts, per currency.
 - (NSDictionary<NSString *, NSNumber *> *)monthlySpendByCurrency;
+/// The monthly total in CNY; `missing` receives the currencies without a rate, which are left out.
+- (double)monthlySpendInCNYWithRates:(NSDictionary<NSString *, NSNumber *> *)rates
+    missingCurrencies:(NSArray<NSString *> *_Nullable *_Nullable)missing;
+/// Every payment of every account as CSV (UTF-8 with BOM, for Excel), newest first.
+- (NSData *)paymentsCSVWithRates:(NSDictionary<NSString *, NSNumber *> *)rates;
 
 - (nullable NSData *)exportDataForAccountIDs:(nullable NSArray<NSString *> *)identifiers error:(NSError **)error;
 - (BOOL)importData:(NSData *)data added:(nullable NSUInteger *)added updated:(nullable NSUInteger *)updated error:(NSError **)error;

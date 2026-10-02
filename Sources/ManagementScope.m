@@ -3,7 +3,7 @@
 #import "AccountInsights.h"
 
 static NSArray<NSString *> *KindNames(void) {
-    return @[@"all", @"quota", @"expiring", @"signedout", @"autorenew", @"duplicates", @"group", @"tag"];
+    return @[@"all", @"quota", @"expiring", @"signedout", @"autorenew", @"duplicates", @"group", @"tag", @"supplier"];
 }
 
 NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
@@ -51,6 +51,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeDuplicates: return @"重复邮箱";
         case ManagementScopeGroup: return self.value.length ? self.value : @"未分组";
         case ManagementScopeTag: return self.value;
+        case ManagementScopeSupplier: return self.value.length ? self.value : @"未填写供应商";
     }
     return @"";
 }
@@ -65,6 +66,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeDuplicates: return @"person.2.slash";
         case ManagementScopeGroup: return self.value.length ? @"folder" : @"tray";
         case ManagementScopeTag: return @"tag";
+        case ManagementScopeSupplier: return self.value.length ? @"storefront" : @"questionmark.circle";
     }
     return @"circle";
 }
@@ -85,6 +87,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeDuplicates: return [duplicateIDs containsObject:account.identifier];
         case ManagementScopeGroup: return [account.group isEqualToString:self.value];
         case ManagementScopeTag: return [account.tags containsObject:self.value];
+        case ManagementScopeSupplier: return [account.supplier isEqualToString:self.value];
     }
     return YES;
 }

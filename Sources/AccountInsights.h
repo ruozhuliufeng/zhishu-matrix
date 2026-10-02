@@ -9,7 +9,6 @@ extern double const AccountLowQuotaPercent;
 
 typedef NS_ENUM(NSInteger, AccountStatusKind) {
     AccountStatusNormal = 0,
-    AccountStatusRecommended,
     AccountStatusRefreshFailed,
     AccountStatusExpiringSoon,
     AccountStatusQuotaLow,
@@ -30,11 +29,8 @@ typedef NS_ENUM(NSInteger, AccountStatusTone) {
 @property (nonatomic, readonly) AccountStatusTone tone;
 @property (nonatomic, readonly, copy) NSString *title;
 @property (nonatomic, readonly, copy) NSString *symbol;
-+ (instancetype)statusForAccount:(Account *)account recommended:(BOOL)recommended now:(NSDate *)now;
++ (instancetype)statusForAccount:(Account *)account now:(NSDate *)now;
 @end
-
-/// Signed in, has usage, and the most quota left in its tightest window (at least 10%).
-Account *_Nullable AccountRecommended(NSArray<Account *> *accounts);
 
 /// Lowercased email → accounts sharing it, for emails used by more than one account.
 NSDictionary<NSString *, NSArray<Account *> *> *AccountDuplicateEmails(NSArray<Account *> *accounts);
@@ -53,7 +49,7 @@ typedef NS_OPTIONS(NSUInteger, AccountAlertKinds) {
 };
 
 /// Works out which notifications are due. `state` remembers what was already announced (keep it between
-/// launches); it is updated in place. Each alert: {id, kind, accountID, title, body, recommendedID?}.
+/// launches); it is updated in place. Each alert: {id, kind, accountID, title, body}.
 NSArray<NSDictionary<NSString *, NSString *> *> *AccountAlertsDue(NSArray<Account *> *accounts, NSDate *now,
     NSMutableDictionary *state, AccountAlertKinds kinds);
 /// Stops a deliberate sign-out (clearing login data) from being announced as an expired login.

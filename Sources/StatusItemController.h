@@ -17,7 +17,7 @@ typedef NS_ENUM(NSInteger, StatusItemCommand) {
     StatusItemCommandUnlock,
 };
 
-/// Menu bar item listing every account with its quota, the recommended account and quick actions.
+/// Menu bar item: accounts that need attention, charges and expiries in the next 30 days, spend in CNY and quick actions.
 @interface StatusItemController : NSObject
 @property (nonatomic, copy, nullable) void (^openAccount)(NSString *identifier);
 @property (nonatomic, copy, nullable) void (^perform)(StatusItemCommand command);

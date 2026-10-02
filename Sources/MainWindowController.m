@@ -165,6 +165,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
             name:UsageRefreshSettingsDidChangeNotification object:nil];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(defaultProxyDidChange:)
             name:ProxySettingsDidChangeNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(exchangeRatesDidChange:)
+            name:ExchangeRatesDidChangeNotification object:nil];
         [NSUserDefaults.standardUserDefaults registerDefaults:@{ReleaseIdlePagesMinutesDefaultsKey: @30}];
         [self scheduleUsageRefresh];
         _maintenanceTimer = [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(performMaintenance)
@@ -398,11 +400,10 @@ static BOOL IsChatGPTPage(NSURL *url) {
     NSDate *now = NSDate.date;
     NSUInteger attention = 0;
     for (Account *account in self.store.accounts)
-        if ([AccountStatus statusForAccount:account recommended:NO now:now].kind >= AccountStatusExpiringSoon) attention++;
+        if ([AccountStatus statusForAccount:account now:now].kind >= AccountStatusExpiringSoon) attention++;
     NSApp.dockTile.badgeLabel = attention ? [NSString stringWithFormat:@"%lu", (unsigned long)attention] : nil;
 }
 
-- (NSString *)recommendedAccountID { return AccountRecommended(self.store.accounts).identifier; }
 
 #pragma mark - Pages
 
@@ -602,7 +603,13 @@ static BOOL IsChatGPTPage(NSURL *url) {
     NSDictionary *renewal = [SubscriptionParser renewalFromBillingText:details];
     NSString *date = renewal[@"date"] ?: [SubscriptionParser expiryFromDetails:details];
     NSDictionary *price = billing ? [SubscriptionParser priceFromBillingText:details] : nil;
-    if (!account || (!plan && !date && !price)) return NO;
+    NSString *supplier = billing ? [SubscriptionParser supplierFromBillingText:details] : nil;
+    NSString *card = billing ? [SubscriptionParser cardLast4FromBillingText:details] : nil;
+    NSArray<NSDictionary *> *charges = billing ? [SubscriptionParser paymentsFromBillingText:details] : @[];
+    if (!account || (!plan && !date && !price && !supplier && !card && !charges.count)) return NO;
+    // A subscription bought through a reseller is paid on ChatGPT with the reseller's card; what is on the page
+    // is then not what you paid, so it only fills in accounts bought directly.
+    BOOL direct = account.supplier.length == 0;
     BOOL changed = [account applyDetectedPlan:plan source:@"page"];
     if (date && (![account.expiresAt isEqualToString:date] || ![account.expirySource isEqualToString:@"page"])) {
         account.expiresAt = date;
@@ -613,10 +620,30 @@ static BOOL IsChatGPTPage(NSURL *url) {
         account.autoRenew = renewal[@"autoRenew"];
         changed = YES;
     }
-    if (price && (![account.monthlyPrice isEqual:price[@"amount"]] || ![account.currency isEqualToString:price[@"currency"]])) {
+    if (price && (direct || !account.monthlyPrice) &&
+        (![account.monthlyPrice isEqual:price[@"amount"]] || ![account.currency isEqualToString:price[@"currency"]])) {
         account.monthlyPrice = price[@"amount"];
         account.currency = price[@"currency"];
         changed = YES;
+    }
+    if (supplier && direct) {
+        account.supplier = supplier;
+        changed = YES;
+    }
+    if (card && direct && !account.cardLast4.length) {
+        account.cardLast4 = card;
+        changed = YES;
+    }
+    if (charges.count && account.supplier.length == 0) {
+        NSMutableArray<AccountPayment *> *payments = [NSMutableArray array];
+        for (NSDictionary *charge in charges) {
+            AccountPayment *payment = [[AccountPayment alloc] initWithDictionary:@{@"date": charge[@"date"],
+                @"amount": charge[@"amount"], @"currency": charge[@"currency"], @"source": @"page"}];
+            payment.paymentMethod = account.paymentMethod;
+            payment.cardLast4 = account.cardLast4;
+            if (payment) [payments addObject:payment];
+        }
+        if ([account addPayments:payments]) changed = YES;
     }
     if (changed) [self.store commit];
     return YES;
@@ -1132,10 +1159,10 @@ static BOOL IsChatGPTPage(NSURL *url) {
 
 - (void)promptAuthorizationForAccount:(Account *)account text:(NSString *)text invalid:(BOOL)invalid {
     NSAlert *alert = [NSAlert new];
-    alert.messageText = [NSString stringWithFormat:@"用“%@”授权登录客户端", account.name];
+    alert.messageText = [NSString stringWithFormat:@"用“%@”授权第三方登录", account.name];
     alert.informativeText = invalid
         ? @"无法识别授权链接，请粘贴以 http:// 或 https:// 开头的完整链接。"
-        : @"粘贴客户端提供的授权链接，它会在此账号的独立会话中打开；授权后客户端会通过回调地址自动完成登录。每次登录都会生成新链接的客户端（如 Codex）请使用最新的链接。";
+        : @"粘贴第三方应用或网站提供的授权链接，它会在此账号的独立会话中打开；授权后会通过回调地址自动跳回对方完成登录。授权链接通常只能使用一次，请使用最新的链接。";
     if (invalid) alert.alertStyle = NSAlertStyleWarning;
     NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 440, 122)];
     NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 52, 440, 70)];
@@ -1148,7 +1175,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
     field.stringValue = text ?: @"";
     NSButton *remember = [NSButton checkboxWithTitle:@"保存为此账号的授权链接" target:nil action:nil];
     remember.frame = NSMakeRect(0, 24, 440, 20);
-    NSButton *capture = [NSButton checkboxWithTitle:@"只获取回调地址，不在本机打开（客户端在其他设备上时使用）" target:nil action:nil];
+    NSButton *capture = [NSButton checkboxWithTitle:@"只获取回调地址，不在本机打开（第三方应用在其他设备上时使用）" target:nil action:nil];
     capture.frame = NSMakeRect(0, 0, 440, 20);
     capture.toolTip = @"授权后拦截 localhost 回调，只显示回调地址供复制，授权码不会发送给本机的任何程序";
     capture.state = [NSUserDefaults.standardUserDefaults boolForKey:CaptureAuthorizationCallbackDefaultsKey]
@@ -1292,6 +1319,26 @@ static BOOL IsChatGPTPage(NSURL *url) {
     }];
 }
 
+- (void)exchangeRatesDidChange:(NSNotification *)notification {
+    [self.management reloadAccounts];
+    [self.inspector reloadAccount];
+}
+
+- (void)exportPaymentsCSV:(id)sender {
+    NSData *data = [self.store paymentsCSVWithRates:AccountExchangeRates()];
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.allowedContentTypes = @[UTTypeCommaSeparatedText];
+    panel.nameFieldStringValue = [NSString stringWithFormat:@"智枢矩阵-付款记录-%@.csv", AccountDayString(NSDate.date)];
+    panel.message = @"导出全部账号的付款记录（日期、账号、供应商、付款方式、卡尾号、金额、折合人民币），可用 Numbers 或 Excel 打开。";
+    __weak typeof(self) weakSelf = self;
+    [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        if (response != NSModalResponseOK || !panel.URL) return;
+        NSError *error = nil;
+        if (![data writeToURL:panel.URL options:NSDataWritingAtomic error:&error])
+            dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf showError:@"无法导出付款记录" detail:error.localizedDescription]; });
+    }];
+}
+
 - (void)revealDataFile:(id)sender {
     NSURL *file = self.store.fileURL;
     if ([NSFileManager.defaultManager fileExistsAtPath:file.path]) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[file]];
@@ -1362,6 +1409,21 @@ static BOOL IsChatGPTPage(NSURL *url) {
         [groupMenu addItem:[self menuItem:@"移出分组" symbol:nil action:@selector(assignGroupFromMenu:) object:@{@"ids": ids, @"group": @""}]];
     groupItem.submenu = groupMenu;
     [menu addItem:groupItem];
+
+    NSMenuItem *supplierItem = [self menuItem:@"供应商" symbol:@"storefront" action:nil object:nil];
+    NSMenu *supplierMenu = [NSMenu new];
+    NSSet *currentSuppliers = [NSSet setWithArray:[accounts valueForKey:@"supplier"]];
+    for (NSString *supplier in self.store.suppliers) {
+        NSMenuItem *item = [self menuItem:supplier symbol:nil action:@selector(assignSupplierFromMenu:) object:@{@"ids": ids, @"supplier": supplier}];
+        item.state = currentSuppliers.count == 1 && [currentSuppliers containsObject:supplier] ? NSControlStateValueOn : NSControlStateValueOff;
+        [supplierMenu addItem:item];
+    }
+    if (!(currentSuppliers.count == 1 && [currentSuppliers containsObject:@""])) {
+        [supplierMenu addItem:[NSMenuItem separatorItem]];
+        [supplierMenu addItem:[self menuItem:@"清除供应商" symbol:nil action:@selector(assignSupplierFromMenu:) object:@{@"ids": ids, @"supplier": @""}]];
+    }
+    supplierItem.submenu = supplierMenu;
+    [menu addItem:supplierItem];
     [menu addItem:[self menuItem:accounts.count == 1 ? @"导出资料…" : @"导出所选资料…" symbol:@"square.and.arrow.up"
         action:@selector(exportFromMenu:) object:ids]];
     [menu addItem:[NSMenuItem separatorItem]];
@@ -1406,6 +1468,12 @@ static BOOL IsChatGPTPage(NSURL *url) {
     if (!account.email.length) return;
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:account.email forType:NSPasteboardTypeString];
+}
+
+- (void)assignSupplierFromMenu:(NSMenuItem *)sender {
+    NSDictionary *payload = sender.representedObject;
+    for (Account *account in [self.store accountsWithIDs:payload[@"ids"]]) account.supplier = payload[@"supplier"];
+    [self.store commit];
 }
 
 - (void)assignGroupFromMenu:(NSMenuItem *)sender {
@@ -1471,6 +1539,10 @@ static BOOL IsChatGPTPage(NSURL *url) {
         return [self targetAccountIDs].count == 1;
     if (action == @selector(readBillingForSelected:)) return [self targetAccountIDs].count > 0;
     if (action == @selector(readAllBilling:)) return self.store.accounts.count > 0 && !self.billingReader.isReading;
+    if (action == @selector(exportPaymentsCSV:)) {
+        for (Account *account in self.store.accounts) if (account.payments.count) return YES;
+        return NO;
+    }
     if (action == @selector(exportRenewalCalendar:)) {
         for (Account *account in self.store.accounts) if (account.expiresAt) return YES;
         return NO;

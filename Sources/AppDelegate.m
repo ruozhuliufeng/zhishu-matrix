@@ -1,6 +1,7 @@
 #import "AppDelegate.h"
 #import "Account.h"
 #import "AccountAlerts.h"
+#import "AccountRefresher.h"
 #import "AppLock.h"
 #import "BackupManager.h"
 #import "MainWindowController.h"
@@ -34,6 +35,7 @@
     NSImage *icon = iconPath ? [[NSImage alloc] initWithContentsOfFile:iconPath] : nil;
     if (icon) NSApp.applicationIconImage = icon;
 
+    MigrateUsageRefreshToDaily();
     NSURL *directory = [self resolvedDataDirectory];
     [NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil];
     self.store = [[AccountStore alloc] initWithFileURL:[directory URLByAppendingPathComponent:@"accounts.json"]];
@@ -305,6 +307,7 @@
     [self add:@"导入账号资料…" action:@selector(importAccounts:) key:nil modifiers:0 to:file target:controller];
     [self add:@"导出全部账号资料…" action:@selector(exportAccounts:) key:@"e" modifiers:command | shift to:file target:controller];
     [self add:@"导出续费日历（.ics）…" action:@selector(exportRenewalCalendar:) key:nil modifiers:0 to:file target:controller];
+    [self add:@"导出付款记录（CSV）…" action:@selector(exportPaymentsCSV:) key:nil modifiers:0 to:file target:controller];
     [file addItem:[NSMenuItem separatorItem]];
     [self add:@"立即备份" action:@selector(backupNow:) key:nil modifiers:0 to:file target:self];
     [self add:@"备份与恢复…" action:@selector(showBackupSettings:) key:nil modifiers:0 to:file target:self];

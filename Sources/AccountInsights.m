@@ -15,7 +15,7 @@ double const AccountLowQuotaPercent = 20;
     return self;
 }
 
-+ (instancetype)statusForAccount:(Account *)account recommended:(BOOL)recommended now:(NSDate *)now {
++ (instancetype)statusForAccount:(Account *)account now:(NSDate *)now {
     AccountExpiryState state = [account expiryStateFromDate:now];
     NSNumber *lowest = account.usage.lowestRemainingPercent;
     if (account.signedIn && !account.signedIn.boolValue)
@@ -34,30 +34,9 @@ double const AccountLowQuotaPercent = 20;
     if (account.refreshError.length)
         return [[self alloc] initWithKind:AccountStatusRefreshFailed tone:AccountStatusToneWarning title:@"读取失败"
             symbol:@"exclamationmark.triangle.fill"];
-    if (recommended)
-        return [[self alloc] initWithKind:AccountStatusRecommended tone:AccountStatusToneGood title:@"推荐使用" symbol:@"star.fill"];
     return [[self alloc] initWithKind:AccountStatusNormal tone:AccountStatusToneNeutral title:@"正常" symbol:@"checkmark.circle"];
 }
 @end
-
-Account *AccountRecommended(NSArray<Account *> *accounts) {
-    NSDate *now = NSDate.date;
-    Account *best = nil;
-    double bestLowest = -1, bestLong = -1;
-    for (Account *account in accounts) {
-        if ((account.signedIn && !account.signedIn.boolValue) || account.refreshError.length) continue;
-        if ([account expiryStateFromDate:now] == AccountExpiryStateExpired) continue;
-        NSNumber *lowest = account.usage.lowestRemainingPercent;
-        if (!lowest || lowest.doubleValue < 10) continue;
-        double longRemaining = account.usage.longWindow ? account.usage.longWindow.remainingPercent : lowest.doubleValue;
-        if (lowest.doubleValue > bestLowest || (lowest.doubleValue == bestLowest && longRemaining > bestLong)) {
-            best = account;
-            bestLowest = lowest.doubleValue;
-            bestLong = longRemaining;
-        }
-    }
-    return best;
-}
 
 NSDictionary<NSString *, NSArray<Account *> *> *AccountDuplicateEmails(NSArray<Account *> *accounts) {
     NSMutableDictionary<NSString *, NSMutableArray<Account *> *> *byEmail = [NSMutableDictionary dictionary];
@@ -155,23 +134,11 @@ NSArray<NSDictionary<NSString *, NSString *> *> *AccountAlertsDue(NSArray<Accoun
                 }
             }
             if (low.count) {
-                NSMutableArray *others = [accounts mutableCopy];
-                [others removeObject:account];
-                Account *recommended = AccountRecommended(others);
-                NSMutableArray *body = [NSMutableArray array];
                 NSString *reset = ResetPhrase(soonestReset, now);
-                if (reset) [body addObject:reset];
-                if (recommended) {
-                    double left = recommended.usage.longWindow ? recommended.usage.longWindow.remainingPercent
-                                                               : recommended.usage.lowestRemainingPercent.doubleValue;
-                    [body addObject:[NSString stringWithFormat:@"建议切换到“%@”（剩 %.0f%%）", recommended.name, left]];
-                }
-                NSMutableDictionary *alert = [@{@"id": [NSString stringWithFormat:@"quota.%@.%.0f", identifier, now.timeIntervalSince1970],
+                [alerts addObject:@{@"id": [NSString stringWithFormat:@"quota.%@.%.0f", identifier, now.timeIntervalSince1970],
                     @"kind": @"quota", @"accountID": identifier,
                     @"title": [NSString stringWithFormat:@"“%@”额度告急：%@", account.name, [low componentsJoinedByString:@"、"]],
-                    @"body": body.count ? [body componentsJoinedByString:@"。"] : @"额度即将用完"} mutableCopy];
-                if (recommended) alert[@"recommendedID"] = recommended.identifier;
-                [alerts addObject:alert];
+                    @"body": reset ? [NSString stringWithFormat:@"%@。", reset] : @"额度即将用完。"}];
             } else if (recovered.count) {
                 [alerts addObject:@{@"id": [NSString stringWithFormat:@"reset.%@.%.0f", identifier, now.timeIntervalSince1970],
                     @"kind": @"reset", @"accountID": identifier,
@@ -261,6 +228,9 @@ NSString *AccountRenewalCalendar(NSArray<Account *> *accounts) {
         NSMutableArray *details = [NSMutableArray arrayWithObject:[@"订阅：" stringByAppendingString:account.planTitle]];
         if (account.email.length) [details addObject:[@"邮箱：" stringByAppendingString:account.email]];
         if (account.tags.count) [details addObject:[@"标签：" stringByAppendingString:[account.tags componentsJoinedByString:@"、"]]];
+        if (account.paymentSummary.length) [details addObject:[@"付款：" stringByAppendingString:account.paymentSummary]];
+        NSNumber *cny = AccountAmountInCNY(account.monthlyPrice, account.currency, AccountExchangeRates());
+        if (cny && ![account.currency isEqualToString:@"CNY"]) [details addObject:[@"折合：" stringByAppendingString:AccountFormatCNY(cny)]];
         NSDate *next = [NSCalendar.currentCalendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:date options:0];
         [lines addObjectsFromArray:@[
             @"BEGIN:VEVENT",

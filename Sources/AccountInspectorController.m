@@ -33,7 +33,8 @@ static NSString *SourceName(NSString *source, id value) {
     return @"已保存";
 }
 
-@interface AccountInspectorController () <NSTextFieldDelegate, NSComboBoxDelegate, NSTextViewDelegate, NSTokenFieldDelegate>
+@interface AccountInspectorController () <NSTextFieldDelegate, NSComboBoxDelegate, NSTextViewDelegate, NSTokenFieldDelegate,
+    NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
 @property (nonatomic, weak) id<AccountCoordinator> coordinator;
 @property (nonatomic, copy, nullable) NSString *accountID;
 @property (nonatomic) NSUInteger selectionCount;
@@ -57,6 +58,15 @@ static NSString *SourceName(NSString *source, id value) {
 @property (nonatomic, strong) NSTextField *predictionLabel;
 @property (nonatomic, strong) NSButton *billingButton;
 @property (nonatomic, strong) NSProgressIndicator *billingSpinner;
+@property (nonatomic, strong) NSTextField *cnyLabel;
+@property (nonatomic, strong) NSComboBox *supplierBox;
+@property (nonatomic, strong) NSComboBox *methodBox;
+@property (nonatomic, strong) NSTextField *cardField;
+@property (nonatomic, strong) NSTextField *cardHint;
+@property (nonatomic, strong) NSTableView *paymentsTable;
+@property (nonatomic, strong) NSScrollView *paymentsScroll;
+@property (nonatomic, strong) NSTextField *paymentsSummary;
+@property (nonatomic, copy) NSArray<AccountPayment *> *paymentRows;
 @property (nonatomic, strong) NSTextField *proxyField;
 @property (nonatomic, strong) NSTextField *proxyResult;
 @property (nonatomic, strong) NSButton *proxyTestButton;
@@ -340,6 +350,59 @@ static NSString *SourceName(NSString *source, id value) {
     NSStackView *syncButton = [NSStackView stackViewWithViews:@[self.billingButton, self.billingSpinner, billingPage]];
     syncButton.spacing = 8;
 
+    self.cnyLabel = DeskLabel(@"", 11, NSFontWeightRegular);
+    self.cnyLabel.textColor = NSColor.secondaryLabelColor;
+
+    // Payment
+    self.supplierBox = [NSComboBox new];
+    self.supplierBox.placeholderString = @"选择或输入供应商";
+    self.supplierBox.completes = YES;
+    self.supplierBox.delegate = self;
+    self.supplierBox.target = self;
+    self.supplierBox.action = @selector(paymentFieldChosen:);
+    self.methodBox = [NSComboBox new];
+    self.methodBox.placeholderString = @"例如：信用卡";
+    self.methodBox.completes = YES;
+    self.methodBox.delegate = self;
+    self.methodBox.target = self;
+    self.methodBox.action = @selector(paymentFieldChosen:);
+    self.cardField = [NSTextField new];
+    self.cardField.placeholderString = @"卡号后 4 位";
+    self.cardField.delegate = self;
+    self.cardHint = DeskLabel(@"", 11, NSFontWeightRegular);
+    self.cardHint.textColor = NSColor.secondaryLabelColor;
+    self.paymentsTable = [NSTableView new];
+    self.paymentsTable.style = NSTableViewStylePlain;
+    self.paymentsTable.usesAlternatingRowBackgroundColors = YES;
+    self.paymentsTable.rowHeight = 22;
+    self.paymentsTable.intercellSpacing = NSMakeSize(6, 2);
+    self.paymentsTable.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
+    for (NSArray *spec in @[@[@"date", @"日期", @86], @[@"amount", @"金额", @84], @[@"cny", @"折合 ¥", @76]]) {
+        NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:spec[0]];
+        column.title = spec[1];
+        column.width = [spec[2] doubleValue];
+        column.minWidth = 60;
+        [self.paymentsTable addTableColumn:column];
+    }
+    self.paymentsTable.dataSource = self;
+    self.paymentsTable.delegate = self;
+    self.paymentsTable.target = self;
+    self.paymentsTable.doubleAction = @selector(editClickedPayment:);
+    self.paymentsTable.menu = [NSMenu new];
+    self.paymentsTable.menu.delegate = self;
+    self.paymentsScroll = [NSScrollView new];
+    self.paymentsScroll.documentView = self.paymentsTable;
+    self.paymentsScroll.hasVerticalScroller = YES;
+    self.paymentsScroll.autohidesScrollers = YES;
+    self.paymentsScroll.borderType = NSBezelBorder;
+    [self.paymentsScroll.heightAnchor constraintEqualToConstant:118].active = YES;
+    self.paymentsSummary = [NSTextField wrappingLabelWithString:@""];
+    self.paymentsSummary.font = [NSFont systemFontOfSize:11];
+    self.paymentsSummary.textColor = NSColor.secondaryLabelColor;
+    NSButton *addButton = DeskButton(@"记一笔付款…", @"plus", self, @selector(addPayment:));
+    addButton.toolTip = @"记录一次付款的日期和金额；可同时把续费 / 到期日顺延 1 个月";
+    NSStackView *addPayment = [NSStackView stackViewWithViews:@[addButton]];
+
     // Network
     self.proxyField = [NSTextField new];
     self.proxyField.delegate = self;
@@ -361,9 +424,9 @@ static NSString *SourceName(NSString *source, id value) {
     self.authField.cell.scrollable = YES;
     self.authField.lineBreakMode = NSLineBreakByTruncatingMiddle;
     NSButton *authButton = DeskButton(@"打开授权链接…", @"person.badge.key", self, @selector(openAuthorization:));
-    authButton.toolTip = @"在此账号的会话中打开客户端提供的授权链接（⇧⌘L）";
+    authButton.toolTip = @"在此账号的会话中打开第三方提供的授权链接（⇧⌘L）";
     NSTextField *authHint = [NSTextField wrappingLabelWithString:
-        @"用此账号登录 Codex 等支持“使用 ChatGPT 登录”的客户端：粘贴客户端给出的授权链接，授权后客户端会自动完成登录。"];
+        @"用此账号授权第三方应用或网站的“使用 ChatGPT 登录”：粘贴对方给出的授权链接，授权后会自动跳回对方完成登录。"];
     authHint.font = [NSFont systemFontOfSize:11];
     authHint.textColor = NSColor.secondaryLabelColor;
 
@@ -404,11 +467,16 @@ static NSString *SourceName(NSString *source, id value) {
         [self sectionWithID:@"subscription" title:@"订阅" views:@[
             [self fieldWithCaption:@"级别" control:self.planPicker],
             self.dateToggle, dateRow, self.autoRenewToggle,
-            [self fieldWithCaption:@"月费" control:priceRow],
+            [self fieldWithCaption:@"月费" control:priceRow], self.cnyLabel,
             self.sourceLabel, syncButton]],
+        [self sectionWithID:@"payment" title:@"付款" views:@[
+            [self fieldWithCaption:@"供应商" control:self.supplierBox],
+            [self fieldWithCaption:@"付款方式" control:self.methodBox],
+            [self fieldWithCaption:@"付款来源（卡尾号）" control:self.cardField], self.cardHint,
+            [self fieldWithCaption:@"付款记录" control:self.paymentsScroll], self.paymentsSummary, addPayment]],
         [self sectionWithID:@"network" title:@"网络" views:@[
             [self fieldWithCaption:@"代理" control:self.proxyField], self.proxyTestButton, self.proxyResult, proxyHint]],
-        [self sectionWithID:@"auth" title:@"客户端授权" views:@[
+        [self sectionWithID:@"auth" title:@"第三方授权" views:@[
             [self fieldWithCaption:@"授权链接" control:self.authField], authButton, authHint]],
         [self sectionWithID:@"notes" title:@"备注" views:@[notesScroll]],
         [self sectionWithID:@"record" title:@"记录" views:@[self.recordLabel]],
@@ -430,6 +498,7 @@ static NSString *SourceName(NSString *source, id value) {
     [usageBody setCustomSpacing:8 afterView:self.shortRow];
     [usageBody setCustomSpacing:4 afterView:self.trendCaption];
     [self.sectionBodies[@"subscription"] setCustomSpacing:4 afterView:self.dateToggle];
+    [self.sectionBodies[@"payment"] setCustomSpacing:2 afterView:self.cardHint];
     [self.sectionBodies[@"subscription"] setCustomSpacing:6 afterView:self.sourceLabel];
     [self.sectionBodies[@"auth"] setCustomSpacing:6 afterView:authButton];
     [self.sectionBodies[@"network"] setCustomSpacing:4 afterView:self.proxyTestButton];
@@ -504,8 +573,7 @@ static NSString *SourceName(NSString *source, id value) {
     NSDate *now = NSDate.date;
     self.avatar.name = account.name;
     self.avatar.seed = account.identifier;
-    AccountStatus *status = [AccountStatus statusForAccount:account
-        recommended:[self.coordinator.recommendedAccountID isEqualToString:account.identifier] now:now];
+    AccountStatus *status = [AccountStatus statusForAccount:account now:now];
     BOOL attention = status.tone == AccountStatusToneCritical || status.tone == AccountStatusToneWarning;
     self.avatar.statusColor = attention ? DeskColorForTone(status.tone) : (account.signedIn.boolValue ? NSColor.systemGreenColor : nil);
     [self.statusPill showStatus:status showsNormal:NO];
@@ -618,10 +686,61 @@ static NSString *SourceName(NSString *source, id value) {
     if (![self isEditing:self.proxyField]) self.proxyField.stringValue = account.proxy;
     self.proxyField.placeholderString = defaultProxy.length ? [NSString stringWithFormat:@"使用默认代理 %@", defaultProxy] : @"跟随系统代理设置";
     self.sectionSummaries[@"network"].stringValue = account.proxy.length ? account.proxy : (defaultProxy.length ? @"默认代理" : @"系统代理");
+    [self reloadPaymentsOfAccount:account];
 
     NSString *login = account.signedIn ? (account.signedIn.boolValue ? @"已登录" : @"未登录") : @"未检测";
     self.recordLabel.stringValue = [NSString stringWithFormat:@"创建时间　%@\n最近使用　%@\n登录状态　%@",
         DeskDateTimeString(account.createdAt), DeskRelativeTime(account.lastUsedAt), login];
+}
+
+- (void)reloadPaymentsOfAccount:(Account *)account {
+    NSDictionary *rates = AccountExchangeRates();
+    NSNumber *cny = AccountAmountInCNY(account.monthlyPrice, account.currency, rates);
+    BOOL showsCNY = account.monthlyPrice && ![account.currency isEqualToString:@"CNY"];
+    self.cnyLabel.hidden = !showsCNY;
+    self.cnyLabel.stringValue = cny ? [NSString stringWithFormat:@"≈ %@ / 月", AccountFormatCNY(cny)]
+        : (account.currency.length ? [NSString stringWithFormat:@"未设置 %@ 汇率，可在“设置 → 费用”中填写", account.currency]
+                                   : @"填写币种后可折合人民币");
+    self.cnyLabel.textColor = cny ? NSColor.secondaryLabelColor : NSColor.systemOrangeColor;
+
+    AccountStore *store = self.coordinator.store;
+    if (![self isEditing:self.supplierBox]) {
+        [self.supplierBox removeAllItems];
+        [self.supplierBox addItemsWithObjectValues:store.suppliers];
+        self.supplierBox.stringValue = account.supplier;
+    }
+    if (![self isEditing:self.methodBox]) {
+        [self.methodBox removeAllItems];
+        [self.methodBox addItemsWithObjectValues:store.paymentMethods];
+        self.methodBox.stringValue = account.paymentMethod;
+    }
+    if (![self isEditing:self.cardField]) self.cardField.stringValue = account.cardLast4;
+    if (![self isEditing:self.cardField]) {
+        self.cardHint.stringValue = @"只保存卡号后 4 位";
+        self.cardHint.textColor = NSColor.tertiaryLabelColor;
+    }
+
+    self.paymentRows = account.payments;
+    [self.paymentsTable reloadData];
+    double total = 0;
+    NSMutableOrderedSet *missing = [NSMutableOrderedSet orderedSet];
+    for (AccountPayment *payment in account.payments) {
+        NSNumber *converted = AccountAmountInCNY(payment.amount, payment.currency, rates);
+        if (converted) total += converted.doubleValue;
+        else [missing addObject:payment.currency.length ? payment.currency : @"未填币种"];
+    }
+    AccountPayment *last = account.lastPayment;
+    if (!last) {
+        self.paymentsSummary.stringValue = @"还没有付款记录。每次付款后记一笔，可同时顺延续费 / 到期日；读取账单时会自动导入直接在 ChatGPT 付款的扣款记录。";
+    } else {
+        NSMutableString *summary = [NSMutableString stringWithFormat:@"共 %lu 笔，累计 %@", (unsigned long)account.payments.count,
+            AccountFormatCNY(@(total))];
+        if (missing.count) [summary appendFormat:@"（%@ 未设汇率，未计入）", [missing.array componentsJoinedByString:@"、"]];
+        [summary appendFormat:@" · 上次付款 %@", last.date];
+        self.paymentsSummary.stringValue = summary;
+    }
+    NSString *info = account.paymentSummary;
+    self.sectionSummaries[@"payment"].stringValue = info.length ? info : (last ? [@"上次付款 " stringByAppendingString:last.date] : @"未填写");
 }
 
 - (void)commitPendingEdits {
@@ -660,6 +779,10 @@ static NSString *SourceName(NSString *source, id value) {
         [self authLinkEdited];
     } else if (field == self.proxyField) {
         [self proxyEdited];
+    } else if (field == self.supplierBox || field == self.methodBox) {
+        [self paymentFieldChosen:field];
+    } else if (field == self.cardField) {
+        [self cardEdited];
     } else if (field == self.tagsField) {
         NSArray *tags = AccountNormalizedTags(self.tagsField.objectValue);
         if ([tags isEqualToArray:account.tags]) return;
@@ -697,6 +820,234 @@ static NSString *SourceName(NSString *source, id value) {
 - (void)readBilling:(id)sender {
     [self commitPendingEdits];
     if (self.accountID) [self.coordinator readBillingForAccountID:self.accountID];
+}
+
+- (void)paymentFieldChosen:(id)sender {
+    Account *account = [self account];
+    if (!account) return;
+    NSString *supplier = account.supplier, *method = account.paymentMethod;
+    if (sender == self.supplierBox) account.supplier = self.supplierBox.stringValue;
+    if (sender == self.methodBox) account.paymentMethod = self.methodBox.stringValue;
+    if (![supplier isEqualToString:account.supplier] || ![method isEqualToString:account.paymentMethod]) [self save];
+}
+
+- (void)cardEdited {
+    Account *account = [self account];
+    if (!account) return;
+    NSString *text = [self.cardField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *last4 = AccountCardLast4(text);
+    if (text.length && !last4.length) {
+        NSBeep();
+        self.cardHint.stringValue = @"请输入卡号后 4 位数字";
+        self.cardHint.textColor = NSColor.systemRedColor;
+        self.cardField.stringValue = account.cardLast4;
+        return;
+    }
+    NSUInteger digits = 0;
+    for (NSUInteger index = 0; index < text.length; index++)
+        if ([NSCharacterSet.decimalDigitCharacterSet characterIsMember:[text characterAtIndex:index]]) digits++;
+    self.cardField.stringValue = last4;
+    self.cardHint.stringValue = digits > 4 ? @"已只保留后 4 位，完整卡号不会保存" : @"只保存卡号后 4 位";
+    self.cardHint.textColor = digits > 4 ? NSColor.systemOrangeColor : NSColor.tertiaryLabelColor;
+    if ([last4 isEqualToString:account.cardLast4]) return;
+    account.cardLast4 = last4;
+    [self save];
+}
+
+#pragma mark - Payment records
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return (NSInteger)self.paymentRows.count; }
+
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    NSTableCellView *cell = [tableView makeViewWithIdentifier:@"PaymentCell" owner:self];
+    if (!cell) {
+        cell = [NSTableCellView new];
+        cell.identifier = @"PaymentCell";
+        NSTextField *label = DeskLabel(@"", 11.5, NSFontWeightRegular);
+        label.font = [NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightRegular];
+        [cell addSubview:label];
+        cell.textField = label;
+        [NSLayoutConstraint activateConstraints:@[
+            [label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:2],
+            [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-2],
+            [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]
+        ]];
+    }
+    AccountPayment *payment = self.paymentRows[(NSUInteger)row];
+    NSString *column = tableColumn.identifier;
+    cell.textField.textColor = NSColor.labelColor;
+    if ([column isEqualToString:@"date"]) {
+        cell.textField.stringValue = payment.date;
+    } else if ([column isEqualToString:@"amount"]) {
+        cell.textField.stringValue = [payment.currency isEqualToString:@"CNY"] ? AccountFormatCNY(payment.amount)
+            : AccountFormatMoney(payment.amount, payment.currency);
+    } else {
+        NSNumber *cny = AccountAmountInCNY(payment.amount, payment.currency, AccountExchangeRates());
+        cell.textField.stringValue = [payment.currency isEqualToString:@"CNY"] ? @"—" : (cny ? AccountFormatCNY(cny) : @"未设汇率");
+        cell.textField.textColor = cny ? NSColor.secondaryLabelColor : NSColor.systemOrangeColor;
+    }
+    NSMutableArray *tip = [NSMutableArray array];
+    for (NSString *part in @[payment.supplier, payment.paymentMethod,
+                             payment.cardLast4.length ? [@"尾号 " stringByAppendingString:payment.cardLast4] : @"", payment.note])
+        if (part.length) [tip addObject:part];
+    [tip addObject:[payment.source isEqualToString:@"page"] ? @"来自账单页" : @"手动记录"];
+    cell.toolTip = [tip componentsJoinedByString:@" · "];
+    return cell;
+}
+
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    [menu removeAllItems];
+    NSInteger row = self.paymentsTable.clickedRow;
+    if (row < 0 || row >= (NSInteger)self.paymentRows.count) {
+        [menu addItemWithTitle:@"记一笔付款…" action:@selector(addPayment:) keyEquivalent:@""].target = self;
+        return;
+    }
+    NSMenuItem *edit = [menu addItemWithTitle:@"编辑…" action:@selector(editPaymentFromMenu:) keyEquivalent:@""];
+    NSMenuItem *remove = [menu addItemWithTitle:@"删除" action:@selector(deletePaymentFromMenu:) keyEquivalent:@""];
+    for (NSMenuItem *item in @[edit, remove]) {
+        item.target = self;
+        item.representedObject = self.paymentRows[(NSUInteger)row];
+    }
+}
+
+- (void)addPayment:(id)sender {
+    [self commitPendingEdits];
+    Account *account = [self account];
+    if (!account) return;
+    AccountPayment *payment = [AccountPayment new];
+    payment.amount = account.monthlyPrice ?: @0;
+    payment.currency = account.currency.length ? account.currency : @"CNY";
+    payment.supplier = account.supplier;
+    payment.paymentMethod = account.paymentMethod;
+    payment.cardLast4 = account.cardLast4;
+    [self presentEditorForPayment:payment isNew:YES];
+}
+
+- (void)editClickedPayment:(id)sender {
+    NSInteger row = self.paymentsTable.clickedRow;
+    if (row >= 0 && row < (NSInteger)self.paymentRows.count) [self presentEditorForPayment:self.paymentRows[(NSUInteger)row] isNew:NO];
+}
+
+- (void)editPaymentFromMenu:(NSMenuItem *)sender { [self presentEditorForPayment:sender.representedObject isNew:NO]; }
+
+- (void)deletePaymentFromMenu:(NSMenuItem *)sender {
+    AccountPayment *payment = sender.representedObject;
+    Account *account = [self account];
+    if (!account || !payment) return;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = [NSString stringWithFormat:@"删除 %@ 的付款记录？", payment.date];
+    alert.informativeText = AccountFormatMoney(payment.amount, payment.currency);
+    [alert addButtonWithTitle:@"删除"].hasDestructiveAction = YES;
+    [alert addButtonWithTitle:@"取消"];
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        NSMutableArray *payments = [account.payments mutableCopy];
+        [payments removeObject:payment];
+        account.payments = payments;
+        [weakSelf save];
+    }];
+}
+
+- (NSComboBox *)comboWithValues:(NSArray<NSString *> *)values value:(NSString *)value placeholder:(NSString *)placeholder {
+    NSComboBox *combo = [NSComboBox new];
+    [combo addItemsWithObjectValues:values];
+    combo.stringValue = value ?: @"";
+    combo.placeholderString = placeholder;
+    combo.completes = YES;
+    [combo.widthAnchor constraintEqualToConstant:220].active = YES;
+    return combo;
+}
+
+- (void)presentEditorForPayment:(AccountPayment *)payment isNew:(BOOL)isNew {
+    Account *account = [self account];
+    if (!account) return;
+    AccountStore *store = self.coordinator.store;
+    NSDatePicker *date = [NSDatePicker new];
+    date.datePickerStyle = NSDatePickerStyleTextFieldAndStepper;
+    date.datePickerElements = NSDatePickerElementFlagYearMonthDay;
+    date.dateValue = AccountDateFromDayString(payment.date) ?: NSDate.date;
+    NSTextField *amount = [NSTextField new];
+    NSNumberFormatter *formatter = [NSNumberFormatter new];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    formatter.minimum = @0;
+    formatter.maximumFractionDigits = 2;
+    formatter.lenient = YES;
+    amount.formatter = formatter;
+    amount.objectValue = payment.amount.doubleValue > 0 ? payment.amount : nil;
+    amount.placeholderString = @"金额";
+    [amount.widthAnchor constraintEqualToConstant:120].active = YES;
+    NSComboBox *currency = [self comboWithValues:@[@"CNY", @"USD", @"PHP", @"HKD", @"TWD", @"EUR", @"GBP", @"JPY", @"SGD"]
+        value:payment.currency placeholder:@"币种"];
+    [currency.widthAnchor constraintEqualToConstant:92].active = YES;
+    NSStackView *money = [NSStackView stackViewWithViews:@[amount, currency]];
+    money.spacing = 8;
+    NSComboBox *supplier = [self comboWithValues:store.suppliers value:payment.supplier placeholder:@"供应商"];
+    NSComboBox *method = [self comboWithValues:store.paymentMethods value:payment.paymentMethod placeholder:@"付款方式"];
+    NSTextField *card = [NSTextField new];
+    card.stringValue = payment.cardLast4;
+    card.placeholderString = @"卡号后 4 位";
+    [card.widthAnchor constraintEqualToConstant:120].active = YES;
+    NSTextField *note = [NSTextField new];
+    note.stringValue = payment.note;
+    note.placeholderString = @"可选，例如订单号";
+    [note.widthAnchor constraintEqualToConstant:220].active = YES;
+    NSButton *extend = [NSButton checkboxWithTitle:@"同时把续费 / 到期日顺延 1 个月" target:nil action:nil];
+    extend.state = isNew && account.expiresAt && !account.autoRenew.boolValue ? NSControlStateValueOn : NSControlStateValueOff;
+    extend.hidden = !isNew;
+
+    NSGridView *grid = [NSGridView gridViewWithViews:@[
+        @[DeskLabel(@"日期", 13, NSFontWeightRegular), date],
+        @[DeskLabel(@"金额", 13, NSFontWeightRegular), money],
+        @[DeskLabel(@"供应商", 13, NSFontWeightRegular), supplier],
+        @[DeskLabel(@"付款方式", 13, NSFontWeightRegular), method],
+        @[DeskLabel(@"卡尾号", 13, NSFontWeightRegular), card],
+        @[DeskLabel(@"备注", 13, NSFontWeightRegular), note],
+        @[[NSGridCell emptyContentView], extend]]];
+    grid.rowSpacing = 8;
+    grid.columnSpacing = 10;
+    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
+    grid.frame = NSMakeRect(0, 0, 340, grid.fittingSize.height);
+
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = isNew ? [NSString stringWithFormat:@"为“%@”记一笔付款", account.name] : @"编辑付款记录";
+    alert.informativeText = @"付款来源只保存卡号后 4 位。";
+    alert.accessoryView = grid;
+    [alert addButtonWithTitle:isNew ? @"记录" : @"保存"];
+    [alert addButtonWithTitle:@"取消"];
+    [alert layout];
+    alert.window.initialFirstResponder = amount;
+    NSString *identifier = account.identifier;
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
+        AccountInspectorController *strongSelf = weakSelf;
+        Account *current = [strongSelf.coordinator.store accountWithID:identifier];
+        if (!current || response != NSAlertFirstButtonReturn) return;
+        NSNumber *value = [amount.objectValue isKindOfClass:NSNumber.class] ? amount.objectValue : nil;
+        if (value.doubleValue <= 0) {
+            NSBeep();
+            return;
+        }
+        payment.date = AccountDayString(date.dateValue);
+        payment.amount = value;
+        payment.currency = currency.stringValue;
+        payment.supplier = supplier.stringValue;
+        payment.paymentMethod = method.stringValue;
+        payment.cardLast4 = card.stringValue;
+        payment.note = note.stringValue;
+        NSMutableArray *payments = [current.payments mutableCopy];
+        if (isNew) [payments addObject:payment];
+        current.payments = payments;
+        if (isNew && extend.state == NSControlStateValueOn) {
+            NSCalendar *calendar = NSCalendar.currentCalendar;
+            NSDate *today = [calendar startOfDayForDate:NSDate.date];
+            NSDate *base = AccountDateFromDayString(current.expiresAt);
+            if (!base || [base compare:today] == NSOrderedAscending) base = today;
+            current.expiresAt = AccountDayString([calendar dateByAddingUnit:NSCalendarUnitMonth value:1 toDate:base options:0]);
+            current.expirySource = @"manual";
+        }
+        [strongSelf save];
+    }];
 }
 
 - (void)openBillingPage:(id)sender {

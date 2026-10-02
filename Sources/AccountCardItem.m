@@ -140,7 +140,7 @@
 
     NSButton *open = DeskButton(@"打开", @"globe", self, @selector(openAccount:));
     NSButton *authorize = DeskButton(@"授权", @"person.badge.key", self, @selector(authorize:));
-    authorize.toolTip = @"用此账号打开客户端授权链接";
+    authorize.toolTip = @"用此账号授权第三方应用登录（打开对方提供的授权链接）";
     self.refreshButton = DeskButton(@"刷新", @"arrow.clockwise", self, @selector(refresh:));
     self.refreshButton.toolTip = @"刷新用量与订阅";
     for (NSButton *button in @[open, authorize, self.refreshButton]) button.controlSize = NSControlSizeSmall;
@@ -232,8 +232,13 @@
     self.nameLabel.toolTip = account.name;
     NSMutableArray *detail = [NSMutableArray array];
     if (account.email.length) [detail addObject:account.email];
-    if (account.group.length) [detail addObject:account.group];
+    if (account.supplier.length) [detail addObject:account.supplier];
+    if (account.cardLast4.length) [detail addObject:[@"尾号 " stringByAppendingString:account.cardLast4]];
+    if (!account.supplier.length && !account.cardLast4.length && account.group.length) [detail addObject:account.group];
     self.detailLabel.stringValue = detail.count ? [detail componentsJoinedByString:@" · "] : @"未填写邮箱";
+    NSMutableArray *tip = [NSMutableArray array];
+    for (NSString *line in @[account.email, account.paymentSummary, account.group]) if (line.length) [tip addObject:line];
+    self.detailLabel.toolTip = [tip componentsJoinedByString:@"\n"];
     [self.statusBadge showStatus:status showsNormal:NO];
     self.planPill.text = account.plan ?: @"未获取";
     self.planPill.tintColor = DeskColorForPlan(account.planFamily);
@@ -269,7 +274,10 @@
         self.renewalLabel.textColor = state == AccountExpiryStateActive || state == AccountExpiryStateRenewing
             ? NSColor.secondaryLabelColor : DeskColorForExpiry(state);
     }
-    self.priceLabel.stringValue = account.monthlyPrice ? [AccountFormatMoney(account.monthlyPrice, account.currency) stringByAppendingString:@"/月"] : @"";
+    NSNumber *cny = AccountAmountInCNY(account.monthlyPrice, account.currency, AccountExchangeRates());
+    NSString *original = account.monthlyPrice ? [AccountFormatMoney(account.monthlyPrice, account.currency) stringByAppendingString:@"/月"] : @"";
+    self.priceLabel.stringValue = cny ? [AccountFormatCNY(cny) stringByAppendingString:@"/月"] : original;
+    self.priceLabel.toolTip = cny && ![account.currency isEqualToString:@"CNY"] ? original : nil;
 
     self.refreshButton.enabled = !refreshing;
     if (refreshing) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];

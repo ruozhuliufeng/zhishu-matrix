@@ -84,7 +84,7 @@ static NSString *const CopyTitle = @"复制回调地址";
     labels.spacing = 3;
     [labels setClippingResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.callbackCopyButton = DeskButton(CopyTitle, @"doc.on.doc", self, @selector(copyCallbackURL:));
-    self.callbackCopyButton.toolTip = @"复制完整的回调地址（包含一次性授权码），粘贴到客户端或在客户端所在设备上打开";
+    self.callbackCopyButton.toolTip = @"复制完整的回调地址（包含一次性授权码），粘贴到第三方应用或在其所在设备上打开";
     self.actionButton = DeskButton(@"重新载入", nil, self, @selector(performAction:));
     for (NSButton *button in @[self.callbackCopyButton, self.actionButton]) {
         button.controlSize = NSControlSizeSmall;
@@ -181,10 +181,10 @@ static NSString *const CopyTitle = @"复制回调地址";
     if (opened) {
         NSURL *app = [NSWorkspace.sharedWorkspace URLForApplicationToOpenURL:url];
         NSString *name = app ? [NSFileManager.defaultManager displayNameAtPath:app.path] : url.scheme;
-        self.handoffMessage = [NSString stringWithFormat:@"授权结果已交给“%@”，客户端会自动完成登录，可以关闭此窗口。", name];
+        self.handoffMessage = [NSString stringWithFormat:@"授权结果已交给“%@”，对方会自动完成登录，可以关闭此窗口。", name];
         self.state = AuthorizationStateHandedOff;
     } else {
-        self.handoffMessage = [NSString stringWithFormat:@"没有应用可以处理 %@:// 回调，请确认客户端已安装。", url.scheme];
+        self.handoffMessage = [NSString stringWithFormat:@"没有应用可以处理 %@:// 回调，请确认对应的应用已安装。", url.scheme];
         self.state = AuthorizationStateFailed;
     }
     [self updateStatus];
@@ -204,7 +204,7 @@ static NSString *const CopyTitle = @"复制回调地址";
     NSColor *green = NSColor.systemGreenColor, *orange = NSColor.systemOrangeColor;
 
     if (self.state == AuthorizationStateCaptured) {
-        text = @"已获取回调地址，未在本机打开。复制后粘贴到客户端，或在客户端所在的设备上打开。";
+        text = @"已获取回调地址，未在本机打开。复制后粘贴到第三方应用，或在其所在的设备上打开。";
         symbol = @"checkmark.circle.fill";
         tint = green;
         fill = [green colorWithAlphaComponent:0.12];
@@ -214,8 +214,8 @@ static NSString *const CopyTitle = @"复制回调地址";
         failed = [failed isKindOfClass:NSURL.class] ? failed : url;
         text = AuthorizationIsLoopbackURL(failed)
             ? (self.callbackURL
-                ? [NSString stringWithFormat:@"本机 %@ 没有客户端在等待回调。客户端在其他设备上时，复制回调地址到那里使用；否则请在客户端重新生成授权链接。", HostAndPort(failed)]
-                : [NSString stringWithFormat:@"无法连接到客户端的回调地址 %@。请确认客户端仍在等待登录；如已超时，请在客户端重新生成授权链接。", HostAndPort(failed)])
+                ? [NSString stringWithFormat:@"本机 %@ 没有应用在等待回调。第三方应用在其他设备上时，复制回调地址到那里使用；否则请让对方重新生成授权链接。", HostAndPort(failed)]
+                : [NSString stringWithFormat:@"无法连接到回调地址 %@。请确认第三方应用仍在等待登录；如已超时，请让对方重新生成授权链接。", HostAndPort(failed)])
             : [NSString stringWithFormat:@"页面加载失败：%@", error.localizedDescription];
         symbol = @"exclamationmark.triangle.fill";
         tint = orange;
@@ -228,7 +228,7 @@ static NSString *const CopyTitle = @"复制回调地址";
         fill = [orange colorWithAlphaComponent:0.12];
     } else if (self.state == AuthorizationStateCompleted || self.state == AuthorizationStateHandedOff) {
         text = self.state == AuthorizationStateHandedOff ? self.handoffMessage
-            : [NSString stringWithFormat:@"授权结果已发送给客户端（%@），可以关闭此窗口。", HostAndPort(url)];
+            : [NSString stringWithFormat:@"授权结果已发送给第三方应用（%@），可以关闭此窗口。", HostAndPort(url)];
         symbol = @"checkmark.circle.fill";
         tint = green;
         fill = [green colorWithAlphaComponent:0.12];

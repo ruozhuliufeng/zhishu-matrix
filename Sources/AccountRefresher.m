@@ -8,7 +8,16 @@ NSNotificationName const UsageRefreshSettingsDidChangeNotification = @"UsageRefr
 
 NSInteger UsageRefreshMinutes(void) {
     id value = [NSUserDefaults.standardUserDefaults objectForKey:UsageRefreshMinutesDefaultsKey];
-    return value ? MAX(0, [value integerValue]) : 30;
+    return value ? MAX(0, [value integerValue]) : 1440;
+}
+
+void MigrateUsageRefreshToDaily(void) {
+    // 0.2.9: subscription records only need a daily read; earlier versions refreshed every 30 minutes.
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults boolForKey:@"usageRefreshMigratedToDaily"]) return;
+    id value = [defaults objectForKey:UsageRefreshMinutesDefaultsKey];
+    if (value && [value integerValue] > 0 && [value integerValue] < 1440) [defaults setInteger:1440 forKey:UsageRefreshMinutesDefaultsKey];
+    [defaults setBool:YES forKey:@"usageRefreshMigratedToDaily"];
 }
 
 static BOOL IsSuccess(NSInteger status) { return status >= 200 && status < 300; }

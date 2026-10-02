@@ -71,7 +71,7 @@ static NSString *QuotaSummary(Account *account) {
     NSDate *now = NSDate.date;
     if (!locked)
         for (Account *account in self.store.accounts)
-            if ([AccountStatus statusForAccount:account recommended:NO now:now].tone == AccountStatusToneCritical) attention++;
+            if ([AccountStatus statusForAccount:account now:now].tone == AccountStatusToneCritical) attention++;
     NSImage *image = [NSImage imageWithSystemSymbolName:locked ? @"lock.square" : @"square.grid.3x3.square" accessibilityDescription:@"智枢矩阵"];
     image.template = YES;
     button.image = image;
@@ -90,10 +90,10 @@ static NSString *QuotaSummary(Account *account) {
     return item;
 }
 
-- (NSAttributedString *)titleForAccount:(Account *)account detail:(NSString *)detail color:(NSColor *)color {
+- (NSAttributedString *)titleWithText:(NSString *)text detail:(NSString *)detail color:(NSColor *)color {
     NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
     paragraph.tabStops = @[[[NSTextTab alloc] initWithTextAlignment:NSTextAlignmentRight location:300 options:@{}]];
-    NSMutableAttributedString *title = [[NSMutableAttributedString alloc] initWithString:account.name
+    NSMutableAttributedString *title = [[NSMutableAttributedString alloc] initWithString:text
         attributes:@{NSFontAttributeName: [NSFont menuFontOfSize:0], NSParagraphStyleAttributeName: paragraph}];
     if (detail.length)
         [title appendAttributedString:[[NSAttributedString alloc] initWithString:[@"\t" stringByAppendingString:detail] attributes:@{
@@ -115,23 +115,68 @@ static NSString *QuotaSummary(Account *account) {
 
     NSArray<Account *> *accounts = self.store.accounts;
     NSDate *now = NSDate.date;
-    Account *recommended = AccountRecommended(accounts);
-    NSMenuItem *header = [menu addItemWithTitle:recommended
-        ? [NSString stringWithFormat:@"推荐使用：%@（%@）", recommended.name, QuotaSummary(recommended)]
-        : (accounts.count ? @"暂无可推荐的账号，刷新用量后再看" : @"还没有账号") action:nil keyEquivalent:@""];
-    header.enabled = NO;
-    if (accounts.count) [menu addItem:[NSMenuItem separatorItem]];
+    NSDictionary *rates = AccountExchangeRates();
+
+    // Accounts that need something done.
+    NSMutableArray<NSArray *> *attention = [NSMutableArray array];
     for (Account *account in accounts) {
-        AccountStatus *status = [AccountStatus statusForAccount:account recommended:account == recommended now:now];
-        NSString *detail = QuotaSummary(account);
-        if (status.kind == AccountStatusSignedOut || status.kind == AccountStatusExpired || status.kind == AccountStatusExpiringSoon ||
-            status.kind == AccountStatusRefreshFailed || !detail.length) detail = status.kind == AccountStatusNormal ? @"" : status.title;
-        NSColor *color = status.tone == AccountStatusToneNeutral ? NSColor.secondaryLabelColor : ToneColor(status.tone);
-        NSMenuItem *item = [self addTitle:account.name action:@selector(openAccountItem:) tag:0 to:menu];
-        item.attributedTitle = [self titleForAccount:account detail:detail color:color];
-        item.image = DotImage(ToneColor(status.tone));
-        item.representedObject = account.identifier;
-        item.toolTip = [NSString stringWithFormat:@"%@ · %@ · %@", account.planTitle, status.title, [account expiryDescriptionFromDate:now]];
+        AccountStatus *status = [AccountStatus statusForAccount:account now:now];
+        if (status.tone == AccountStatusToneCritical || status.tone == AccountStatusToneWarning) [attention addObject:@[account, status]];
+    }
+    [attention sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
+        return [@(((AccountStatus *)b[1]).kind) compare:@(((AccountStatus *)a[1]).kind)];
+    }];
+    [self addHeader:attention.count ? [NSString stringWithFormat:@"需要处理（%lu）", (unsigned long)attention.count]
+        : (accounts.count ? @"没有需要处理的账号" : @"还没有账号") to:menu];
+    for (NSArray *entry in attention) {
+        Account *account = entry[0];
+        AccountStatus *status = entry[1];
+        [self addAccountItem:account text:account.name detail:status.title color:ToneColor(status.tone) dot:ToneColor(status.tone) to:menu];
+    }
+
+    // Charges and expiries in the next 30 days.
+    NSMutableArray<Account *> *upcoming = [NSMutableArray array];
+    for (Account *account in accounts) {
+        NSNumber *days = [account daysRemainingFromDate:now];
+        if (days && days.integerValue >= 0 && days.integerValue <= 30) [upcoming addObject:account];
+    }
+    [upcoming sortUsingComparator:^NSComparisonResult(Account *a, Account *b) { return [a.expiresAt compare:b.expiresAt]; }];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [self addHeader:upcoming.count ? @"30 天内扣款 / 到期" : @"30 天内没有扣款或到期" to:menu];
+    NSDateFormatter *day = [NSDateFormatter new];
+    day.dateFormat = @"M月d日";
+    for (Account *account in upcoming) {
+        NSDate *date = AccountDateFromDayString(account.expiresAt);
+        NSString *detail = @"到期";
+        NSColor *color = NSColor.systemOrangeColor;
+        if (account.autoRenew.boolValue) {
+            NSNumber *cny = AccountAmountInCNY(account.monthlyPrice, account.currency, rates);
+            detail = cny ? [@"扣款 " stringByAppendingString:AccountFormatCNY(cny)]
+                : (account.monthlyPrice ? [@"扣款 " stringByAppendingString:AccountFormatMoney(account.monthlyPrice, account.currency)] : @"自动续费");
+            color = NSColor.secondaryLabelColor;
+        }
+        [self addAccountItem:account text:[NSString stringWithFormat:@"%@　%@", [day stringFromDate:date], account.name]
+            detail:detail color:color dot:account.autoRenew.boolValue ? NSColor.systemBlueColor : NSColor.systemOrangeColor to:menu];
+    }
+    NSArray<NSString *> *missing = nil;
+    double spend = [self.store monthlySpendInCNYWithRates:rates missingCurrencies:&missing];
+    if (spend > 0 || missing.count)
+        [self addHeader:[NSString stringWithFormat:@"每月支出 %@%@", AccountFormatCNY(@(spend)),
+            missing.count ? [NSString stringWithFormat:@"（%@ 未设汇率）", [missing componentsJoinedByString:@"、"]] : @""] to:menu];
+
+    // Every account, for opening one quickly.
+    if (accounts.count) {
+        [menu addItem:[NSMenuItem separatorItem]];
+        NSMenuItem *all = [self addTitle:@"全部账号" action:nil tag:0 to:menu];
+        NSMenu *list = [NSMenu new];
+        list.autoenablesItems = NO;
+        for (Account *account in accounts) {
+            AccountStatus *status = [AccountStatus statusForAccount:account now:now];
+            NSString *detail = status.kind == AccountStatusNormal ? QuotaSummary(account) : status.title;
+            NSColor *color = status.tone == AccountStatusToneNeutral ? NSColor.secondaryLabelColor : ToneColor(status.tone);
+            [self addAccountItem:account text:account.name detail:detail color:color dot:ToneColor(status.tone) to:list];
+        }
+        all.submenu = list;
     }
     [menu addItem:[NSMenuItem separatorItem]];
     BOOL refreshing = self.isRefreshing && self.isRefreshing();
@@ -145,6 +190,22 @@ static NSString *QuotaSummary(Account *account) {
     if (self.canLock && self.canLock()) [self addTitle:@"立即锁定" action:@selector(command:) tag:StatusItemCommandLock to:menu];
     [menu addItem:[NSMenuItem separatorItem]];
     [self addTitle:@"退出智枢矩阵" action:@selector(quit:) tag:0 to:menu];
+}
+
+- (void)addHeader:(NSString *)title to:(NSMenu *)menu {
+    NSMenuItem *header = [menu addItemWithTitle:title action:nil keyEquivalent:@""];
+    header.enabled = NO;
+}
+
+- (void)addAccountItem:(Account *)account text:(NSString *)text detail:(NSString *)detail color:(NSColor *)color
+    dot:(NSColor *)dot to:(NSMenu *)menu {
+    NSMenuItem *item = [self addTitle:text action:@selector(openAccountItem:) tag:0 to:menu];
+    item.attributedTitle = [self titleWithText:text detail:detail color:color];
+    item.image = DotImage(dot);
+    item.representedObject = account.identifier;
+    NSString *payment = account.paymentSummary;
+    item.toolTip = [NSString stringWithFormat:@"%@ · %@%@", account.planTitle, [account expiryDescriptionFromDate:NSDate.date],
+        payment.length ? [@" · " stringByAppendingString:payment] : @""];
 }
 
 - (void)openAccountItem:(NSMenuItem *)sender {

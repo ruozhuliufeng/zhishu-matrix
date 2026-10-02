@@ -9,8 +9,6 @@ NSString *const NotifySignedOutDefaultsKey = @"notifySignedOut";
 NSNotificationName const AlertSettingsDidChangeNotification = @"AlertSettingsDidChangeNotification";
 
 static NSString *const AlertStateDefaultsKey = @"alertState";
-static NSString *const QuotaCategory = @"quota";
-static NSString *const OpenRecommendedAction = @"open-recommended";
 
 @interface AccountAlerts () <UNUserNotificationCenterDelegate>
 @end
@@ -44,10 +42,6 @@ static NSString *const OpenRecommendedAction = @"open-recommended";
 - (void)start {
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     center.delegate = self;
-    UNNotificationAction *open = [UNNotificationAction actionWithIdentifier:OpenRecommendedAction title:@"打开推荐账号"
-        options:UNNotificationActionOptionForeground];
-    [center setNotificationCategories:[NSSet setWithObject:[UNNotificationCategory categoryWithIdentifier:QuotaCategory
-        actions:@[open] intentIdentifiers:@[] options:0]]];
     if (self.enabledKinds)
         [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
             completionHandler:^(BOOL granted, NSError *error) {}];
@@ -81,12 +75,7 @@ static NSString *const OpenRecommendedAction = @"open-recommended";
     content.body = alert[@"body"];
     content.sound = UNNotificationSound.defaultSound;
     content.threadIdentifier = alert[@"accountID"];
-    NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:alert[@"accountID"] forKey:@"accountID"];
-    if (alert[@"recommendedID"]) {
-        info[@"recommendedID"] = alert[@"recommendedID"];
-        content.categoryIdentifier = QuotaCategory;
-    }
-    content.userInfo = info;
+    content.userInfo = @{@"accountID": alert[@"accountID"]};
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:alert[@"id"] content:content trigger:nil];
     [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:nil];
 }
@@ -120,7 +109,7 @@ static NSString *const OpenRecommendedAction = @"open-recommended";
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response
     withCompletionHandler:(void (^)(void))completionHandler {
     NSDictionary *info = response.notification.request.content.userInfo;
-    NSString *identifier = [response.actionIdentifier isEqualToString:OpenRecommendedAction] ? info[@"recommendedID"] : info[@"accountID"];
+    NSString *identifier = info[@"accountID"];
     dispatch_async(dispatch_get_main_queue(), ^{
         if ([identifier isKindOfClass:NSString.class] && self.openAccount) self.openAccount(identifier);
         completionHandler();

@@ -9,6 +9,7 @@ extern NSString *const SettingsPaneUsage;
 extern NSString *const SettingsPaneSecurity;
 extern NSString *const SettingsPaneBackup;
 extern NSString *const SettingsPaneNetwork;
+extern NSString *const SettingsPaneCost;
 
 @interface SettingsWindowController : NSWindowController
 - (instancetype)initWithStore:(AccountStore *)store backup:(BackupManager *)backup alerts:(AccountAlerts *)alerts lock:(AppLock *)lock;

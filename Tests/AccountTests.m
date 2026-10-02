@@ -334,27 +334,20 @@ static void TestInsights(void) {
     signedOut.usage = UsageWith(0, 0);
     Account *fresh = [Account accountWithName:@"新号"];
 
-    CHECK(AccountRecommended(@[healthy, roomy, low, signedOut, fresh]) == roomy, "recommends the account with the most quota");
-    CHECK(AccountRecommended(@[low, signedOut, fresh]) == nil, "recommends nothing when every account is short or signed out");
-    roomy.refreshError = @"无法连接";
-    CHECK(AccountRecommended(@[healthy, roomy]) == healthy, "skips accounts whose last refresh failed");
-    roomy.refreshError = nil;
-
-    CHECK([AccountStatus statusForAccount:signedOut recommended:NO now:today].kind == AccountStatusSignedOut, "signed out wins");
-    AccountStatus *lowStatus = [AccountStatus statusForAccount:low recommended:NO now:today];
+    CHECK([AccountStatus statusForAccount:signedOut now:today].kind == AccountStatusSignedOut, "signed out wins");
+    AccountStatus *lowStatus = [AccountStatus statusForAccount:low now:today];
     CHECK(lowStatus.kind == AccountStatusQuotaLow && [lowStatus.title isEqualToString:@"额度剩 5%"], "reports low quota with the percentage");
     CHECK(lowStatus.tone == AccountStatusToneCritical, "low quota is critical");
     low.expiresAt = @"2026-09-20";
-    CHECK([AccountStatus statusForAccount:low recommended:NO now:today].kind == AccountStatusExpired, "expiry outranks quota");
+    CHECK([AccountStatus statusForAccount:low now:today].kind == AccountStatusExpired, "expiry outranks quota");
     healthy.expiresAt = @"2026-10-04";
-    AccountStatus *soon = [AccountStatus statusForAccount:healthy recommended:YES now:today];
-    CHECK(soon.kind == AccountStatusExpiringSoon && [soon.title isEqualToString:@"3 天后到期"], "expiring soon outranks recommended");
+    AccountStatus *soon = [AccountStatus statusForAccount:healthy now:today];
+    CHECK(soon.kind == AccountStatusExpiringSoon && [soon.title isEqualToString:@"3 天后到期"], "reports an expiry within a week");
     healthy.autoRenew = @YES;
-    CHECK([AccountStatus statusForAccount:healthy recommended:YES now:today].kind == AccountStatusRecommended,
-        "an auto-renewing date is not a risk");
-    CHECK([AccountStatus statusForAccount:fresh recommended:NO now:today].kind == AccountStatusNormal, "no data is normal");
+    CHECK([AccountStatus statusForAccount:healthy now:today].kind == AccountStatusNormal, "an auto-renewing date is not a risk");
+    CHECK([AccountStatus statusForAccount:fresh now:today].kind == AccountStatusNormal, "no data is normal");
     fresh.refreshError = @"HTTP 500";
-    CHECK([AccountStatus statusForAccount:fresh recommended:NO now:today].kind == AccountStatusRefreshFailed, "reports refresh failures");
+    CHECK([AccountStatus statusForAccount:fresh now:today].kind == AccountStatusRefreshFailed, "reports refresh failures");
 
     Account *twin = [Account accountWithName:@"重复"];
     twin.email = @"Same@Example.com";
@@ -487,9 +480,8 @@ static void TestAlerts(void) {
     NSArray *alerts = AccountAlertsDue(@[main, spare], now, state, all);
     CHECK(alerts.count == 1 && [alerts[0][@"kind"] isEqualToString:@"quota"], "announces a window running low");
     CHECK([alerts[0][@"title"] isEqualToString:@"“主力”额度告急：每周剩 8%"], "names the account and the window");
-    CHECK([alerts[0][@"body"] containsString:@"2 天后重置"] && [alerts[0][@"body"] containsString:@"“备用”（剩 76%）"],
-        "says when it resets and which account to use instead");
-    CHECK([alerts[0][@"recommendedID"] isEqualToString:HomeID], "carries the recommended account");
+    CHECK([alerts[0][@"body"] isEqualToString:@"2 天后重置。"], "says when the window resets");
+    CHECK(alerts[0][@"recommendedID"] == nil && ![alerts[0][@"body"] containsString:@"备用"], "suggests no other account");
     CHECK(AccountAlertsDue(@[main, spare], now, state, all).count == 0, "announces each low window once");
 
     NSData *saved = [NSJSONSerialization dataWithJSONObject:state options:0 error:nil];
@@ -564,6 +556,89 @@ static void TestScopes(void) {
     CHECK([[ManagementScope scopeWithKind:ManagementScopeGroup value:@""].title isEqualToString:@"未分组"], "names the ungrouped list");
 }
 
+static void TestPayments(void) {
+    CHECK([AccountCardLast4(@"6222 0212 3456 7890") isEqualToString:@"7890"], "keeps only the last four card digits");
+    CHECK([AccountCardLast4(@"尾号 1234") isEqualToString:@"1234"] && [AccountCardLast4(@"12") isEqualToString:@""],
+        "rejects fewer than four digits");
+    NSArray *expectedSuppliers = @[@"Google Play", @"iOS", @"世事宜AI", @"Bewild"];
+    CHECK([AccountSuppliers() isEqualToArray:expectedSuppliers], "offers the four suppliers");
+
+    Account *account = [[Account alloc] initWithDictionary:@{@"id": WorkID, @"name": @"主力", @"supplier": @" 世事宜AI ",
+        @"paymentMethod": @"信用卡", @"cardLast4": @"4111 1111 1111 1234", @"monthlyPrice": @100, @"currency": @"usd",
+        @"payments": @[@{@"date": @"2026-08-25", @"amount": @100, @"currency": @"USD", @"cardLast4": @"1234"},
+                       @{@"date": @"2026-09-25", @"amount": @"100.00", @"currency": @"USD", @"note": @"续费"},
+                       @{@"date": @"bad", @"amount": @1}]}];
+    CHECK([account.supplier isEqualToString:@"世事宜AI"] && [account.cardLast4 isEqualToString:@"1234"], "reads payment details");
+    CHECK(account.payments.count == 2 && [account.lastPayment.date isEqualToString:@"2026-09-25"], "keeps valid payments newest first");
+    CHECK([account.paymentSummary isEqualToString:@"世事宜AI · 信用卡 · 尾号 1234"], "summarises the payment details");
+    CHECK([account matchesSearch:@"1234"] && [account matchesSearch:@"世事宜"], "search covers payment details");
+    NSDictionary *saved = account.dictionaryRepresentation;
+    CHECK([saved[@"cardLast4"] isEqualToString:@"1234"] && [saved[@"payments"] count] == 2 &&
+        [saved[@"payments"][0][@"note"] isEqualToString:@"续费"], "saves payment details");
+    Account *reloaded = [[Account alloc] initWithDictionary:saved];
+    CHECK([reloaded.lastPayment.identifier isEqualToString:account.lastPayment.identifier], "keeps payment ids across saves");
+
+    AccountPayment *duplicate = [[AccountPayment alloc] initWithDictionary:@{@"date": @"2026-09-25", @"amount": @100, @"currency": @"USD"}];
+    AccountPayment *october = [[AccountPayment alloc] initWithDictionary:@{@"date": @"2026-10-25", @"amount": @100, @"currency": @"USD"}];
+    NSArray *incoming = @[duplicate, october];
+    CHECK([account addPayments:incoming] == 1 && account.payments.count == 3, "skips charges already recorded");
+
+    NSDictionary *rates = @{@"USD": @7.1, @"CNY": @1};
+    CHECK([AccountAmountInCNY(@100, @"USD", rates) doubleValue] == 710, "converts with the given rate");
+    CHECK([AccountAmountInCNY(@50, @"RMB", @{}) doubleValue] == 50 && AccountAmountInCNY(@5, @"PHP", rates) == nil,
+        "CNY needs no rate; other currencies do");
+    CHECK([AccountFormatCNY(@1115.5) isEqualToString:@"¥1,115.50"], "formats yuan");
+
+    NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+    AccountStore *store = [[AccountStore alloc] initWithFileURL:url];
+    [store load:nil];
+    Account *added = [store addAccountNamed:@"菲律宾号" group:nil];
+    added.plan = @"Pro 200";
+    added.monthlyPrice = @8919.64;
+    added.currency = @"PHP";
+    added.supplier = @"Bewild";
+    Account *dollar = [store addAccountNamed:@"美元号" group:nil];
+    dollar.plan = @"Plus";
+    dollar.monthlyPrice = @20;
+    dollar.currency = @"USD";
+    dollar.supplier = @"iOS";
+    [dollar addPayments:@[october]];
+    NSArray *missing = nil;
+    double monthly = [store monthlySpendInCNYWithRates:rates missingCurrencies:&missing];
+    NSArray *expectedMissing = @[@"PHP"];
+    CHECK(fabs(monthly - 142) < 0.001 && [missing isEqualToArray:expectedMissing], "totals in CNY and lists currencies without a rate");
+    NSArray *suppliers = store.suppliers;
+    CHECK(suppliers.count == 4 && [suppliers containsObject:@"Bewild"], "lists the default suppliers once");
+    NSData *data = [store paymentsCSVWithRates:rates];
+    const unsigned char *bytes = data.bytes;
+    NSString *csv = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    CHECK(data.length > 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF, "starts the CSV with a BOM for Excel");
+    CHECK([csv hasPrefix:@"日期,账号"] && [csv containsString:@"2026-10-25,美元号,,Plus,,,,100,USD,710.00,,手动"],
+        "exports payments as CSV with yuan amounts");
+    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+}
+
+static void TestBillingPayments(void) {
+    NSString *billing = @"账单\nChatGPT Pro 200\n您的套餐将在 2026年10月25日 自动续订。\n付款方式\nVisa •••• 4242\n管理订阅\n交易记录\n"
+        "2026年9月25日\nPHP 8,919.64\n已支付\n2026年8月25日\nPHP 8,919.64\n已支付\n2026年7月25日 PHP 8,919.64 失败\n"
+        "2026年6月25日 ₱1,099.00 已退款";
+    NSArray *payments = [SubscriptionParser paymentsFromBillingText:billing];
+    CHECK(payments.count == 2 && [payments[0][@"date"] isEqualToString:@"2026-09-25"] &&
+        [payments[0][@"amount"] isEqual:@8919.64] && [payments[0][@"currency"] isEqualToString:@"PHP"],
+        "reads paid charges from the payment history");
+    CHECK([SubscriptionParser paymentsFromBillingText:@"您的套餐将在 2026年10月25日 自动续订 PHP 8,919.64"].count == 0,
+        "the renewal sentence is not a payment");
+    CHECK([[SubscriptionParser cardLast4FromBillingText:billing] isEqualToString:@"4242"], "reads the card's last digits");
+    CHECK([[SubscriptionParser cardLast4FromBillingText:@"Mastercard ending in 5555"] isEqualToString:@"5555"], "reads 'ending in'");
+    CHECK([SubscriptionParser cardLast4FromBillingText:@"ChatGPT Pro 200 2026年10月25日"] == nil, "no card, no digits");
+    NSString *apple = @"账单\nChatGPT Plus\n你的订阅通过 Apple 管理。请在 App Store 中管理或取消订阅。";
+    CHECK([SubscriptionParser isBillingText:apple] && [[SubscriptionParser supplierFromBillingText:apple] isEqualToString:@"iOS"],
+        "recognises subscriptions managed by Apple");
+    CHECK([[SubscriptionParser supplierFromBillingText:@"Your subscription is managed through Google Play."] isEqualToString:@"Google Play"],
+        "recognises Google Play subscriptions");
+    CHECK([SubscriptionParser supplierFromBillingText:billing] == nil, "web subscriptions name no store");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -582,6 +657,8 @@ int main(void) {
         TestWebDAV();
         TestAlerts();
         TestScopes();
+        TestPayments();
+        TestBillingPayments();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

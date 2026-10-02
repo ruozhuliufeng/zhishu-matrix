@@ -82,7 +82,6 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
         color = DeskColorForTone(status.tone);
     } else if (quota.count) {
         detail = [quota componentsJoinedByString:@" · "];
-        if (status.kind == AccountStatusRecommended) detail = [@"推荐 · " stringByAppendingString:detail];
     } else if (account.email.length) {
         detail = account.email;
     } else if (state == AccountExpiryStateActive || state == AccountExpiryStateRenewing) {
@@ -336,8 +335,7 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
         cell.identifier = AccountCellIdentifier;
     }
     Account *account = item;
-    AccountStatus *status = [AccountStatus statusForAccount:account
-        recommended:[self.coordinator.recommendedAccountID isEqualToString:account.identifier] now:NSDate.date];
+    AccountStatus *status = [AccountStatus statusForAccount:account now:NSDate.date];
     [cell configureWithAccount:account status:status now:NSDate.date];
     return cell;
 }

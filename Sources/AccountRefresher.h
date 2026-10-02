@@ -5,10 +5,12 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// NSUserDefaults key: minutes between automatic usage refreshes; 0 turns them off. Defaults to 30.
+/// NSUserDefaults key: minutes between automatic usage refreshes; 0 turns them off. Defaults to 1440 (daily).
 extern NSString *const UsageRefreshMinutesDefaultsKey;
 extern NSNotificationName const UsageRefreshSettingsDidChangeNotification;
 NSInteger UsageRefreshMinutes(void);
+/// Moves a sub-daily automatic refresh interval from earlier versions to once a day (runs once).
+void MigrateUsageRefreshToDaily(void);
 
 /// Reads usage limits and subscription renewal for accounts from ChatGPT's backend API. Each account is read in a
 /// hidden web view on its own data store, so WebKit supplies the sign-in exactly as when browsing; only the parsed

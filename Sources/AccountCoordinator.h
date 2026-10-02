@@ -31,8 +31,6 @@ typedef NS_ENUM(NSInteger, DeskMode) {
 - (BOOL)isReadingBillingForAccountID:(NSString *)identifier;
 /// Opens the account's billing settings in the browser and reads them from the visible page.
 - (void)openBillingPageForAccountID:(NSString *)identifier;
-/// The account with the most quota left right now, if any.
-@property (nonatomic, readonly, nullable) NSString *recommendedAccountID;
 /// Usage history points {t, short, long} for trends.
 - (NSArray<NSDictionary *> *)usageHistoryForAccountID:(NSString *)identifier;
 /// Applies a changed per-account proxy to the account's pages.
@@ -52,6 +50,7 @@ typedef NS_ENUM(NSInteger, DeskMode) {
 - (IBAction)showBrowser:(nullable id)sender;
 - (IBAction)showManagement:(nullable id)sender;
 - (IBAction)exportRenewalCalendar:(nullable id)sender;
+- (IBAction)exportPaymentsCSV:(nullable id)sender;
 - (IBAction)readAllBilling:(nullable id)sender;
 @end
 

@@ -15,6 +15,7 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         case ManagementScopeDuplicates: return NSColor.systemPurpleColor;
         case ManagementScopeGroup: return NSColor.secondaryLabelColor;
         case ManagementScopeTag: return DeskColorForTag(scope.value);
+        case ManagementScopeSupplier: return scope.value.length ? NSColor.systemTealColor : NSColor.tertiaryLabelColor;
     }
     return NSColor.secondaryLabelColor;
 }
@@ -157,6 +158,17 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         for (Account *account in accounts) if (!account.group.length) ungrouped = YES;
         if (ungrouped) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeGroup value:@""]];
     }
+    NSMutableArray<NSString *> *suppliers = [NSMutableArray array];
+    BOOL unsupplied = NO;
+    for (NSString *supplier in store.suppliers)
+        for (Account *account in accounts)
+            if ([account.supplier isEqualToString:supplier]) { [suppliers addObject:supplier]; break; }
+    for (Account *account in accounts) if (!account.supplier.length) unsupplied = YES;
+    if (suppliers.count) {
+        [rows addObject:@"供应商"];
+        for (NSString *supplier in suppliers) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:supplier]];
+        if (unsupplied) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:@""]];
+    }
     NSArray<NSString *> *tags = store.tags;
     if (tags.count) {
         [rows addObject:@"标签"];
@@ -258,10 +270,12 @@ static NSColor *ScopeTint(ManagementScope *scope) {
     [menu removeAllItems];
     ManagementScope *scope = [self scopeAtRow:self.tableView.clickedRow];
     if (!scope.value.length) return;
-    BOOL tag = scope.kind == ManagementScopeTag;
-    NSMenuItem *rename = [menu addItemWithTitle:tag ? @"重命名标签…" : @"重命名分组…" action:@selector(renameScope:) keyEquivalent:@""];
-    NSMenuItem *remove = [menu addItemWithTitle:tag ? @"从所有账号移除此标签" : @"解散分组（账号移到未分组）"
-        action:@selector(removeScope:) keyEquivalent:@""];
+    NSString *noun = scope.kind == ManagementScopeTag ? @"标签" : (scope.kind == ManagementScopeSupplier ? @"供应商" : @"分组");
+    NSMenuItem *rename = [menu addItemWithTitle:[NSString stringWithFormat:@"重命名%@…", noun] action:@selector(renameScope:)
+        keyEquivalent:@""];
+    NSString *removeTitle = scope.kind == ManagementScopeTag ? @"从所有账号移除此标签"
+        : (scope.kind == ManagementScopeSupplier ? @"清除这些账号的供应商" : @"解散分组（账号移到未分组）");
+    NSMenuItem *remove = [menu addItemWithTitle:removeTitle action:@selector(removeScope:) keyEquivalent:@""];
     for (NSMenuItem *item in @[rename, remove]) {
         item.target = self;
         item.representedObject = scope;
@@ -270,10 +284,9 @@ static NSColor *ScopeTint(ManagementScope *scope) {
 
 - (void)renameScope:(NSMenuItem *)sender {
     ManagementScope *scope = sender.representedObject;
-    BOOL tag = scope.kind == ManagementScopeTag;
+    NSString *noun = scope.kind == ManagementScopeTag ? @"标签" : (scope.kind == ManagementScopeSupplier ? @"供应商" : @"分组");
     NSAlert *alert = [NSAlert new];
-    alert.messageText = tag ? [NSString stringWithFormat:@"重命名标签“%@”", scope.value]
-                            : [NSString stringWithFormat:@"重命名分组“%@”", scope.value];
+    alert.messageText = [NSString stringWithFormat:@"重命名%@“%@”", noun, scope.value];
     alert.informativeText = @"使用已有名称时会与其合并。";
     NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 280, 24)];
     field.stringValue = scope.value;
@@ -295,7 +308,9 @@ static NSColor *ScopeTint(ManagementScope *scope) {
 - (void)replaceScope:(ManagementScope *)scope with:(NSString *)name {
     AccountStore *store = self.coordinator.store;
     for (Account *account in store.accounts) {
-        if (scope.kind == ManagementScopeGroup && [account.group isEqualToString:scope.value]) {
+        if (scope.kind == ManagementScopeSupplier && [account.supplier isEqualToString:scope.value]) {
+            account.supplier = name ?: @"";
+        } else if (scope.kind == ManagementScopeGroup && [account.group isEqualToString:scope.value]) {
             account.group = name ?: @"";
         } else if (scope.kind == ManagementScopeTag && [account.tags containsObject:scope.value]) {
             NSMutableArray *tags = [account.tags mutableCopy];

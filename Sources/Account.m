@@ -73,6 +73,59 @@ NSString *AccountFormatMoney(NSNumber *amount, NSString *currency) {
     return currency.length ? [NSString stringWithFormat:@"%@ %@", currency, value] : value;
 }
 
+NSString *AccountFormatCNY(NSNumber *amount) {
+    if (!amount) return @"";
+    static NSNumberFormatter *formatter;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        formatter = [NSNumberFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.numberStyle = NSNumberFormatterDecimalStyle;
+        formatter.usesGroupingSeparator = YES;
+        formatter.groupingSeparator = @",";
+        formatter.minimumFractionDigits = 2;
+        formatter.maximumFractionDigits = 2;
+    });
+    return [@"¥" stringByAppendingString:[formatter stringFromNumber:amount] ?: amount.stringValue];
+}
+
+NSArray<NSString *> *AccountSuppliers(void) { return @[@"Google Play", @"iOS", @"世事宜AI", @"Bewild"]; }
+
+NSArray<NSString *> *AccountPaymentMethods(void) {
+    return @[@"信用卡", @"借记卡", @"支付宝", @"微信支付", @"PayPal", @"礼品卡 / 余额"];
+}
+
+NSString *AccountCardLast4(NSString *text) {
+    NSMutableString *digits = [NSMutableString string];
+    for (NSUInteger index = 0; index < text.length; index++) {
+        unichar character = [text characterAtIndex:index];
+        if (character >= '0' && character <= '9') [digits appendFormat:@"%C", character];
+    }
+    return digits.length >= 4 ? [digits substringFromIndex:digits.length - 4] : @"";
+}
+
+NSString *const ExchangeRatesDefaultsKey = @"exchangeRatesToCNY";
+NSNotificationName const ExchangeRatesDidChangeNotification = @"ExchangeRatesDidChangeNotification";
+
+NSDictionary<NSString *, NSNumber *> *AccountExchangeRates(void) {
+    NSMutableDictionary *rates = [NSMutableDictionary dictionary];
+    NSDictionary *saved = [NSUserDefaults.standardUserDefaults dictionaryForKey:ExchangeRatesDefaultsKey];
+    [saved enumerateKeysAndObjectsUsingBlock:^(NSString *currency, id rate, BOOL *stop) {
+        if ([currency isKindOfClass:NSString.class] && [rate isKindOfClass:NSNumber.class] && [rate doubleValue] > 0)
+            rates[currency.uppercaseString] = rate;
+    }];
+    rates[@"CNY"] = @1;
+    return rates;
+}
+
+NSNumber *AccountAmountInCNY(NSNumber *amount, NSString *currency, NSDictionary<NSString *, NSNumber *> *rates) {
+    if (!amount) return nil;
+    NSString *code = currency.uppercaseString;
+    if ([code isEqualToString:@"RMB"] || [code isEqualToString:@"CNY"]) return amount;
+    NSNumber *rate = code.length ? rates[code] : nil;
+    return rate ? @(amount.doubleValue * rate.doubleValue) : nil;
+}
+
 static NSDateFormatter *DayFormatter(void) {
     static NSDateFormatter *formatter;
     static dispatch_once_t once;
@@ -198,11 +251,74 @@ NSDate *AccountDateFromDayString(NSString *day) {
 }
 @end
 
+#pragma mark - Payments
+
+@implementation AccountPayment
+
+- (instancetype)initWithDictionary:(NSDictionary *)dictionary {
+    if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
+    NSDate *day = AccountDateFromDayString(StringOrNil(dictionary[@"date"]));
+    NSNumber *amount = NumberOrNil(dictionary[@"amount"]);
+    if (!day || !amount) return nil;
+    if ((self = [super init])) {
+        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:StringOrNil(dictionary[@"id"]) ?: @""];
+        _identifier = (uuid ?: [NSUUID UUID]).UUIDString;
+        _date = AccountDayString(day);
+        _amount = amount;
+        self.currency = StringOrNil(dictionary[@"currency"]);
+        self.supplier = StringOrNil(dictionary[@"supplier"]);
+        self.paymentMethod = StringOrNil(dictionary[@"paymentMethod"]);
+        self.cardLast4 = StringOrNil(dictionary[@"cardLast4"]);
+        self.note = StringOrNil(dictionary[@"note"]);
+        self.source = StringOrNil(dictionary[@"source"]);
+    }
+    return self;
+}
+
+- (instancetype)init {
+    if ((self = [super init])) {
+        _identifier = NSUUID.UUID.UUIDString;
+        _date = AccountDayString(NSDate.date);
+        _amount = @0;
+        _currency = @"";
+        _supplier = @"";
+        _paymentMethod = @"";
+        _cardLast4 = @"";
+        _note = @"";
+        _source = @"manual";
+    }
+    return self;
+}
+
+- (void)setCurrency:(NSString *)currency { _currency = [Trimmed(currency).uppercaseString copy]; }
+- (void)setSupplier:(NSString *)supplier { _supplier = [Trimmed(supplier) copy]; }
+- (void)setPaymentMethod:(NSString *)paymentMethod { _paymentMethod = [Trimmed(paymentMethod) copy]; }
+- (void)setCardLast4:(NSString *)cardLast4 { _cardLast4 = [AccountCardLast4(cardLast4) copy]; }
+- (void)setNote:(NSString *)note { _note = [Trimmed(note) copy]; }
+- (void)setSource:(NSString *)source { _source = [Trimmed(source).length ? Trimmed(source) : @"manual" copy]; }
+
+- (NSDictionary *)dictionaryRepresentation {
+    NSMutableDictionary *dictionary = [@{@"id": self.identifier, @"date": self.date, @"amount": self.amount, @"source": self.source}
+        mutableCopy];
+    if (self.currency.length) dictionary[@"currency"] = self.currency;
+    if (self.supplier.length) dictionary[@"supplier"] = self.supplier;
+    if (self.paymentMethod.length) dictionary[@"paymentMethod"] = self.paymentMethod;
+    if (self.cardLast4.length) dictionary[@"cardLast4"] = self.cardLast4;
+    if (self.note.length) dictionary[@"note"] = self.note;
+    return dictionary;
+}
+
+- (BOOL)isSameChargeAs:(AccountPayment *)other {
+    return [other.date isEqualToString:self.date] && [other.currency isEqualToString:self.currency] &&
+        fabs(other.amount.doubleValue - self.amount.doubleValue) < 0.005;
+}
+@end
+
 #pragma mark - Account
 
 static NSArray<NSString *> *KnownKeys(void) {
     return @[@"id", @"name", @"email", @"plan", @"planSource", @"expiresAt", @"expirySource", @"autoRenew",
-             @"monthlyPrice", @"currency", @"group", @"tags", @"notes", @"authURL", @"proxy", @"createdAt", @"lastUsedAt",
+             @"monthlyPrice", @"currency", @"group", @"tags", @"notes", @"authURL", @"proxy", @"supplier", @"paymentMethod", @"cardLast4", @"payments", @"createdAt", @"lastUsedAt",
              @"signedIn", @"usage"];
 }
 
@@ -239,6 +355,16 @@ static NSArray<NSString *> *KnownKeys(void) {
         _notes = StringOrNil(dictionary[@"notes"]) ?: @"";
         _authURL = Trimmed(StringOrNil(dictionary[@"authURL"]));
         _proxy = Trimmed(StringOrNil(dictionary[@"proxy"]));
+        _supplier = Trimmed(StringOrNil(dictionary[@"supplier"]));
+        _paymentMethod = Trimmed(StringOrNil(dictionary[@"paymentMethod"]));
+        _cardLast4 = AccountCardLast4(StringOrNil(dictionary[@"cardLast4"]));
+        NSMutableArray *payments = [NSMutableArray array];
+        if ([dictionary[@"payments"] isKindOfClass:NSArray.class])
+            for (id item in dictionary[@"payments"]) {
+                AccountPayment *payment = [[AccountPayment alloc] initWithDictionary:item];
+                if (payment) [payments addObject:payment];
+            }
+        self.payments = payments;
         _createdAt = TimestampOrNil(dictionary[@"createdAt"]);
         _lastUsedAt = TimestampOrNil(dictionary[@"lastUsedAt"]);
         id signedIn = dictionary[@"signedIn"];
@@ -256,6 +382,39 @@ static NSArray<NSString *> *KnownKeys(void) {
 - (void)setNotes:(NSString *)notes { _notes = [notes ?: @"" copy]; }
 - (void)setAuthURL:(NSString *)authURL { _authURL = [Trimmed(authURL) copy]; }
 - (void)setProxy:(NSString *)proxy { _proxy = [Trimmed(proxy) copy]; }
+- (void)setSupplier:(NSString *)supplier { _supplier = [Trimmed(supplier) copy]; }
+- (void)setPaymentMethod:(NSString *)paymentMethod { _paymentMethod = [Trimmed(paymentMethod) copy]; }
+- (void)setCardLast4:(NSString *)cardLast4 { _cardLast4 = [AccountCardLast4(cardLast4) copy]; }
+- (void)setPayments:(NSArray<AccountPayment *> *)payments {
+    _payments = [payments ?: @[] sortedArrayWithOptions:NSSortStable usingComparator:^NSComparisonResult(AccountPayment *a, AccountPayment *b) {
+        return [b.date compare:a.date];
+    }];
+}
+
+- (NSUInteger)addPayments:(NSArray<AccountPayment *> *)payments {
+    NSMutableArray<AccountPayment *> *merged = [self.payments mutableCopy];
+    NSUInteger added = 0;
+    for (AccountPayment *payment in payments) {
+        BOOL known = NO;
+        for (AccountPayment *existing in merged)
+            if ([existing.identifier isEqualToString:payment.identifier] || [existing isSameChargeAs:payment]) known = YES;
+        if (known) continue;
+        [merged addObject:payment];
+        added++;
+    }
+    if (added) self.payments = merged;
+    return added;
+}
+
+- (AccountPayment *)lastPayment { return self.payments.firstObject; }
+
+- (NSString *)paymentSummary {
+    NSMutableArray *parts = [NSMutableArray array];
+    if (self.supplier.length) [parts addObject:self.supplier];
+    if (self.paymentMethod.length) [parts addObject:self.paymentMethod];
+    if (self.cardLast4.length) [parts addObject:[@"尾号 " stringByAppendingString:self.cardLast4]];
+    return [parts componentsJoinedByString:@" · "];
+}
 - (void)setCurrency:(NSString *)currency { _currency = [Trimmed(currency).uppercaseString copy]; }
 - (void)setTags:(NSArray<NSString *> *)tags { _tags = AccountNormalizedTags(tags); }
 
@@ -280,6 +439,10 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (self.notes.length) dictionary[@"notes"] = self.notes;
     if (self.authURL.length) dictionary[@"authURL"] = self.authURL;
     if (self.proxy.length) dictionary[@"proxy"] = self.proxy;
+    if (self.supplier.length) dictionary[@"supplier"] = self.supplier;
+    if (self.paymentMethod.length) dictionary[@"paymentMethod"] = self.paymentMethod;
+    if (self.cardLast4.length) dictionary[@"cardLast4"] = self.cardLast4;
+    if (self.payments.count) dictionary[@"payments"] = [self.payments valueForKey:@"dictionaryRepresentation"];
     if (self.createdAt) dictionary[@"createdAt"] = [TimestampFormatter() stringFromDate:self.createdAt];
     if (self.lastUsedAt) dictionary[@"lastUsedAt"] = [TimestampFormatter() stringFromDate:self.lastUsedAt];
     if (self.signedIn) dictionary[@"signedIn"] = self.signedIn;
@@ -312,6 +475,10 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (other.notes.length) self.notes = other.notes;
     if (other.authURL.length) self.authURL = other.authURL;
     if (other.proxy.length) self.proxy = other.proxy;
+    if (other.supplier.length) self.supplier = other.supplier;
+    if (other.paymentMethod.length) self.paymentMethod = other.paymentMethod;
+    if (other.cardLast4.length) self.cardLast4 = other.cardLast4;
+    [self addPayments:other.payments];
     if (other.createdAt && (!self.createdAt || [other.createdAt compare:self.createdAt] == NSOrderedAscending))
         self.createdAt = other.createdAt;
 }
@@ -390,7 +557,8 @@ static NSArray<NSString *> *KnownKeys(void) {
 - (BOOL)matchesSearch:(NSString *)query {
     NSString *needle = Trimmed(query);
     if (!needle.length) return YES;
-    NSArray *fields = [@[self.name, self.email, self.group, self.notes, self.plan ?: @""] arrayByAddingObjectsFromArray:self.tags];
+    NSArray *fields = [@[self.name, self.email, self.group, self.notes, self.plan ?: @"", self.supplier, self.paymentMethod,
+        self.cardLast4] arrayByAddingObjectsFromArray:self.tags];
     for (NSString *field in fields)
         if ([field localizedCaseInsensitiveContainsString:needle]) return YES;
     return NO;
@@ -526,6 +694,61 @@ static NSArray *AccountItemsFromJSON(NSData *data, NSError **error) {
     NSMutableOrderedSet *tags = [NSMutableOrderedSet orderedSet];
     for (Account *account in _accounts) [tags addObjectsFromArray:account.tags];
     return [tags.array sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+}
+
+- (NSArray<NSString *> *)orderedValues:(NSArray<NSString *> *)defaults key:(NSString *)key {
+    NSMutableOrderedSet *values = [NSMutableOrderedSet orderedSetWithArray:defaults];
+    NSMutableArray *extra = [NSMutableArray array];
+    for (Account *account in _accounts) {
+        NSString *value = [account valueForKey:key];
+        if (value.length && ![values containsObject:value] && ![extra containsObject:value]) [extra addObject:value];
+    }
+    [values addObjectsFromArray:[extra sortedArrayUsingSelector:@selector(localizedStandardCompare:)]];
+    return values.array;
+}
+
+- (NSArray<NSString *> *)suppliers { return [self orderedValues:AccountSuppliers() key:@"supplier"]; }
+- (NSArray<NSString *> *)paymentMethods { return [self orderedValues:AccountPaymentMethods() key:@"paymentMethod"]; }
+
+- (double)monthlySpendInCNYWithRates:(NSDictionary<NSString *, NSNumber *> *)rates missingCurrencies:(NSArray<NSString *> **)missing {
+    __block double total = 0;
+    NSMutableOrderedSet *unconverted = [NSMutableOrderedSet orderedSet];
+    [self.monthlySpendByCurrency enumerateKeysAndObjectsUsingBlock:^(NSString *currency, NSNumber *amount, BOOL *stop) {
+        NSNumber *converted = AccountAmountInCNY(amount, currency, rates);
+        if (converted) total += converted.doubleValue;
+        else [unconverted addObject:currency.length ? currency : @"未填币种"];
+    }];
+    if (missing) *missing = [unconverted.array sortedArrayUsingSelector:@selector(compare:)];
+    return total;
+}
+
+static NSString *CSVField(NSString *value) {
+    NSString *text = value ?: @"";
+    if ([text rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@",\"\n\r"]].location == NSNotFound) return text;
+    return [NSString stringWithFormat:@"\"%@\"", [text stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""]];
+}
+
+- (NSData *)paymentsCSVWithRates:(NSDictionary<NSString *, NSNumber *> *)rates {
+    NSMutableArray<NSArray *> *rows = [NSMutableArray array];
+    for (Account *account in _accounts)
+        for (AccountPayment *payment in account.payments) [rows addObject:@[payment, account]];
+    [rows sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
+        return [((AccountPayment *)b[0]).date compare:((AccountPayment *)a[0]).date];
+    }];
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:@"日期,账号,邮箱,订阅,供应商,付款方式,卡尾号,金额,币种,折合人民币,备注,来源"];
+    for (NSArray *row in rows) {
+        AccountPayment *payment = row[0];
+        Account *account = row[1];
+        NSNumber *cny = AccountAmountInCNY(payment.amount, payment.currency, rates);
+        NSArray *fields = @[payment.date, account.name, account.email, account.plan ?: @"", payment.supplier, payment.paymentMethod,
+            payment.cardLast4, payment.amount.stringValue, payment.currency, cny ? [NSString stringWithFormat:@"%.2f", cny.doubleValue] : @"",
+            payment.note, [payment.source isEqualToString:@"page"] ? @"账单页" : @"手动"];
+        NSMutableArray *escaped = [NSMutableArray array];
+        for (NSString *field in fields) [escaped addObject:CSVField(field)];
+        [lines addObject:[escaped componentsJoinedByString:@","]];
+    }
+    NSString *csv = [@"\uFEFF" stringByAppendingString:[[lines componentsJoinedByString:@"\r\n"] stringByAppendingString:@"\r\n"]];
+    return [csv dataUsingEncoding:NSUTF8StringEncoding];
 }
 
 - (NSDictionary<NSString *, NSNumber *> *)monthlySpendByCurrency {

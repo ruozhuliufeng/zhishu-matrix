@@ -19,6 +19,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable NSDictionary *)renewalFromBillingText:(nullable NSString *)text;
 /// {@"amount": number, @"currency": ISO code} for the first amount on the page (the latest charge).
 + (nullable NSDictionary *)priceFromBillingText:(nullable NSString *)text;
+/// "iOS" when the subscription is managed by Apple, "Google Play" when by Google.
++ (nullable NSString *)supplierFromBillingText:(nullable NSString *)text;
+/// Last four digits of the payment card shown on the page ("Visa •••• 1234").
++ (nullable NSString *)cardLast4FromBillingText:(nullable NSString *)text;
+/// Paid charges listed under the payment history: [{@"date": yyyy-MM-dd, @"amount", @"currency"}], newest first.
++ (NSArray<NSDictionary *> *)paymentsFromBillingText:(nullable NSString *)text;
 
 /// GET /backend-api/wham/usage → usage windows and credits; `planType` receives "plan_type".
 + (nullable AccountUsage *)usageFromJSON:(nullable id)json planType:(NSString *_Nullable *_Nullable)planType;

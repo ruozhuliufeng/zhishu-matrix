@@ -184,7 +184,13 @@ static NSCalendar *Calendar(void) {
     CalendarEvent *event = _chips[index][@"event"];
     Account *account = event.account;
     NSMutableArray *parts = [NSMutableArray arrayWithObjects:account.name, account.planTitle, event.kindTitle, nil];
-    if (event.isRenewal && account.monthlyPrice) [parts addObject:AccountFormatMoney(account.monthlyPrice, account.currency)];
+    if (event.isRenewal && account.monthlyPrice) {
+        NSNumber *cny = AccountAmountInCNY(account.monthlyPrice, account.currency, AccountExchangeRates());
+        NSString *price = AccountFormatMoney(account.monthlyPrice, account.currency);
+        [parts addObject:cny && ![account.currency isEqualToString:@"CNY"]
+            ? [NSString stringWithFormat:@"%@（≈ %@）", price, AccountFormatCNY(cny)] : price];
+    }
+    if (account.paymentSummary.length) [parts addObject:account.paymentSummary];
     return [parts componentsJoinedByString:@" · "];
 }
 
@@ -310,20 +316,22 @@ static NSCalendar *Calendar(void) {
     [self.grid setNeedsDisplay:YES];
 
     NSUInteger renewals = 0, expiries = 0;
-    NSMutableDictionary<NSString *, NSNumber *> *totals = [NSMutableDictionary dictionary];
+    double total = 0;
+    NSMutableOrderedSet<NSString *> *missing = [NSMutableOrderedSet orderedSet];
+    NSDictionary *rates = AccountExchangeRates();
     for (CalendarEvent *event in events) {
         if ([calendar component:NSCalendarUnitMonth fromDate:event.day] != parts.month) continue;
         if (!event.isRenewal) { expiries++; continue; }
         renewals++;
-        if (event.account.monthlyPrice) {
-            NSString *currency = event.account.currency;
-            totals[currency] = @(totals[currency].doubleValue + event.account.monthlyPrice.doubleValue);
-        }
+        if (!event.account.monthlyPrice) continue;
+        NSNumber *cny = AccountAmountInCNY(event.account.monthlyPrice, event.account.currency, rates);
+        if (cny) total += cny.doubleValue;
+        else [missing addObject:event.account.currency.length ? event.account.currency : @"未填币种"];
     }
     NSMutableArray *summary = [NSMutableArray array];
     if (renewals) [summary addObject:[NSString stringWithFormat:@"续费 %lu 笔", (unsigned long)renewals]];
-    for (NSString *currency in [totals.allKeys sortedArrayUsingSelector:@selector(compare:)])
-        [summary addObject:AccountFormatMoney(totals[currency], currency)];
+    if (total > 0) [summary addObject:AccountFormatCNY(@(total))];
+    if (missing.count) [summary addObject:[NSString stringWithFormat:@"%@ 未设汇率", [missing.array componentsJoinedByString:@"、"]]];
     if (expiries) [summary addObject:[NSString stringWithFormat:@"%lu 个账号到期", (unsigned long)expiries]];
     self.summaryLabel.stringValue = summary.count ? [summary componentsJoinedByString:@" · "] : @"本月没有续费或到期";
 }

@@ -20,6 +20,7 @@ NSString *const SettingsPaneUsage = @"usage";
 NSString *const SettingsPaneSecurity = @"security";
 NSString *const SettingsPaneBackup = @"backup";
 NSString *const SettingsPaneNetwork = @"network";
+NSString *const SettingsPaneCost = @"cost";
 
 static CGFloat const PaneWidth = 580;
 
@@ -138,6 +139,11 @@ static NSString *BackupTime(NSDate *date) {
 @property (nonatomic, strong) NSButton *webdavToggle;
 @property (nonatomic, strong) NSTextField *webdavStatus;
 @property (nonatomic, strong) NSArray<NSButton *> *webdavButtons;
+// Cost
+@property (nonatomic, strong) NSStackView *ratesStack;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSTextField *> *rateFields;
+@property (nonatomic, strong) NSComboBox *currencyPicker;
+@property (nonatomic, strong) NSMutableSet<NSString *> *pendingCurrencies;
 // Network
 @property (nonatomic, strong) NSTextField *proxyField;
 @property (nonatomic, strong) NSTextField *proxyResult;
@@ -188,6 +194,7 @@ static NSString *BackupTime(NSDate *date) {
         [self itemWithIdentifier:SettingsPaneUsage label:@"用量与通知" symbol:@"bell.badge" rows:[self usageRows]],
         [self itemWithIdentifier:SettingsPaneSecurity label:@"安全" symbol:@"lock" rows:[self securityRows]],
         [self itemWithIdentifier:SettingsPaneBackup label:@"备份" symbol:@"externaldrive.badge.timemachine" rows:[self backupRows]],
+        [self itemWithIdentifier:SettingsPaneCost label:@"费用" symbol:@"yensign.circle" rows:[self costRows]],
         [self itemWithIdentifier:SettingsPaneNetwork label:@"网络" symbol:@"network" rows:[self networkRows]]])
         [self.tabs addTabViewItem:item];
     self.window.contentViewController = self.tabs;
@@ -252,7 +259,7 @@ static NSString *BackupTime(NSDate *date) {
         Hint(@"切换账号后，之前的页面会在后台保留以便快速切回；超过设定时间未使用的页面会被释放以节省内存，再次打开时重新载入。"),
         DeskSeparator(),
         Title(@"默认授权链接"), self.authField, self.authError,
-        Hint(@"账号没有单独设置授权链接时，“打开授权链接”会预先填入此地址。每次登录都会生成新链接的客户端（如 Codex）不需要设置。")];
+        Hint(@"账号没有单独设置授权链接时，“打开授权链接”会预先填入此地址。每次授权都会生成新链接的第三方应用不需要设置，打开时粘贴最新链接即可。")];
 }
 
 - (void)statusItemToggled:(id)sender {
@@ -291,13 +298,13 @@ static NSString *BackupTime(NSDate *date) {
 
 - (NSArray<NSView *> *)usageRows {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSPopUpButton *refresh = PopUp(@[@[@"关闭", @0], @[@"每 15 分钟", @15], @[@"每 30 分钟", @30], @[@"每小时", @60], @[@"每 2 小时", @120]],
+    NSPopUpButton *refresh = PopUp(@[@[@"关闭", @0], @[@"每 6 小时", @360], @[@"每 12 小时", @720], @[@"每天", @1440]],
         UsageRefreshMinutes(), self, @selector(refreshIntervalChanged:));
     NSMutableArray *rows = [@[Title(@"用量"), Row(@[DeskLabel(@"自动刷新用量与订阅：", 13, NSFontWeightRegular), refresh]),
         Hint(@"使用各账号在本机已有的登录状态读取 5 小时 / 每周额度、续费日期与是否自动续订；未登录的账号会跳过。读取结果会记录近 8 天的趋势，用来预估额度何时用完。"),
         DeskSeparator(), Title(@"通知")] mutableCopy];
     NSArray *toggles = @[
-        @[[NSString stringWithFormat:@"额度告急与恢复（5 小时或每周额度低于 %.0f%%，并推荐可切换的账号）", AccountLowQuotaPercent], NotifyQuotaDefaultsKey],
+        @[[NSString stringWithFormat:@"额度告急与恢复（5 小时或每周额度低于 %.0f%%）", AccountLowQuotaPercent], NotifyQuotaDefaultsKey],
         @[@"续费与到期提醒（不自动续费的提前 3 天和前一天，自动续费的前一天）", NotifyRenewalDefaultsKey],
         @[@"登录失效（曾经登录的账号被退出时）", NotifySignedOutDefaultsKey]];
     for (NSArray *toggle in toggles) {
@@ -630,6 +637,96 @@ static NSString *BackupTime(NSDate *date) {
     }];
 }
 
+#pragma mark - Cost
+
+- (NSArray<NSView *> *)costRows {
+    self.ratesStack = [NSStackView new];
+    self.ratesStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.ratesStack.alignment = NSLayoutAttributeLeading;
+    self.ratesStack.spacing = 8;
+    self.rateFields = [NSMutableDictionary dictionary];
+    self.pendingCurrencies = [NSMutableSet set];
+    self.currencyPicker = [NSComboBox new];
+    [self.currencyPicker addItemsWithObjectValues:@[@"USD", @"PHP", @"HKD", @"TWD", @"EUR", @"GBP", @"JPY", @"SGD", @"KRW", @"TRY",
+        @"INR", @"BRL", @"NGN", @"MYR", @"THB"]];
+    self.currencyPicker.placeholderString = @"币种代码";
+    [self.currencyPicker.widthAnchor constraintEqualToConstant:110].active = YES;
+    NSButton *add = [NSButton buttonWithTitle:@"添加币种" target:self action:@selector(addCurrency:)];
+    [self rebuildRates];
+    return @[Title(@"汇率（换算为人民币）"), self.ratesStack, Row(@[self.currencyPicker, add]),
+        Hint(@"所有费用统一折合为人民币显示与汇总：每月支出、续费日历、菜单栏和付款记录。汇率按“1 单位外币 = 多少人民币”填写，"
+             "需要手动维护；没有填写汇率的币种不计入人民币合计，并会提示“未设汇率”。账号或付款记录中用到的币种会自动列出。")];
+}
+
+/// Currencies in use plus those with a saved rate, CNY excluded.
+- (NSArray<NSString *> *)currenciesForRates {
+    NSMutableOrderedSet *codes = [NSMutableOrderedSet orderedSet];
+    for (Account *account in self.store.accounts) {
+        if (account.monthlyPrice && account.currency.length) [codes addObject:account.currency];
+        for (AccountPayment *payment in account.payments) if (payment.currency.length) [codes addObject:payment.currency];
+    }
+    [codes addObjectsFromArray:AccountExchangeRates().allKeys];
+    [codes addObjectsFromArray:self.pendingCurrencies.allObjects];
+    [codes removeObject:@"CNY"];
+    [codes removeObject:@"RMB"];
+    return [codes.array sortedArrayUsingSelector:@selector(compare:)];
+}
+
+- (void)rebuildRates {
+    for (NSView *view in self.ratesStack.arrangedSubviews.copy) [view removeFromSuperview];
+    [self.rateFields removeAllObjects];
+    NSDictionary *rates = AccountExchangeRates();
+    NSArray *codes = [self currenciesForRates];
+    if (!codes.count) [self.ratesStack addArrangedSubview:Hint(@"还没有外币。为账号填写月费和币种，或在下方添加。")];
+    NSNumberFormatter *formatter = [NSNumberFormatter new];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    formatter.minimum = @0;
+    formatter.maximumFractionDigits = 6;
+    formatter.lenient = YES;
+    for (NSString *code in codes) {
+        NSTextField *label = DeskLabel([NSString stringWithFormat:@"1 %@ =", code], 13, NSFontWeightMedium);
+        label.font = [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightMedium];
+        [label.widthAnchor constraintEqualToConstant:84].active = YES;
+        NSTextField *field = [NSTextField new];
+        field.formatter = formatter;
+        field.placeholderString = @"未设置";
+        field.objectValue = rates[code];
+        field.delegate = self;
+        field.identifier = code;
+        [field.widthAnchor constraintEqualToConstant:120].active = YES;
+        self.rateFields[code] = field;
+        NSTextField *unit = DeskLabel(@"人民币", 13, NSFontWeightRegular);
+        NSTextField *state = DeskLabel(rates[code] ? @"" : @"未设汇率，不计入合计", 11, NSFontWeightRegular);
+        state.textColor = NSColor.systemOrangeColor;
+        [self.ratesStack addArrangedSubview:Row(@[label, field, unit, state])];
+    }
+}
+
+- (void)saveRateField:(NSTextField *)field {
+    NSMutableDictionary *saved = [[NSUserDefaults.standardUserDefaults dictionaryForKey:ExchangeRatesDefaultsKey] mutableCopy]
+        ?: [NSMutableDictionary dictionary];
+    NSNumber *rate = [field.objectValue isKindOfClass:NSNumber.class] && [field.objectValue doubleValue] > 0 ? field.objectValue : nil;
+    if ([saved[field.identifier] isEqual:rate] || (!rate && !saved[field.identifier])) return;
+    if (rate) saved[field.identifier] = rate; else [saved removeObjectForKey:field.identifier];
+    [NSUserDefaults.standardUserDefaults setObject:saved forKey:ExchangeRatesDefaultsKey];
+    [NSNotificationCenter.defaultCenter postNotificationName:ExchangeRatesDidChangeNotification object:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self rebuildRates];
+        [self.tabs fitItem:self.tabs.tabView.selectedTabViewItem];
+    });
+}
+
+- (void)addCurrency:(id)sender {
+    NSString *code = [[self.currencyPicker.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] uppercaseString];
+    if (code.length != 3 || [code isEqualToString:@"CNY"]) { NSBeep(); return; }
+    self.currencyPicker.stringValue = @"";
+    // Listed with an empty rate until one is typed in.
+    [self.pendingCurrencies addObject:code];
+    [self rebuildRates];
+    [self.tabs fitItem:self.tabs.tabView.selectedTabViewItem];
+    [self.window makeFirstResponder:self.rateFields[code]];
+}
+
 #pragma mark - Network
 
 - (NSArray<NSView *> *)networkRows {
@@ -683,6 +780,7 @@ static NSString *BackupTime(NSDate *date) {
 
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
     id field = notification.object;
+    if ([self.rateFields.allValues containsObject:field]) { [self saveRateField:field]; return; }
     if (field == self.authField) [self saveAuthorizationURL];
     else if (field == self.proxyField) [self saveProxy];
     else if (field == self.serverField || field == self.usernameField || field == self.passwordField || field == self.folderField)

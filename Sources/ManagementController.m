@@ -29,11 +29,16 @@ static NSArray<NSArray *> *ColumnSpecs(void) {
         @[@"status", @"状态", @96, @76, @"status", @NO],
         @[@"plan", @"订阅", @80, @66, @"plan", @NO],
         @[@"tags", @"标签", @110, @84, @"tags", @NO],
-        @[@"short", @"5 小时", @104, @84, @"short", @NO],
+        @[@"short", @"5 小时", @104, @84, @"short", @YES],
         @[@"long", @"每周", @104, @84, @"long", @NO],
         @[@"renewal", @"续费 / 到期", @130, @112, @"expiresAt", @NO],
-        @[@"price", @"月费", @112, @104, @"price", @NO],
-        @[@"email", @"邮箱", @170, @110, @"email", @NO],
+        @[@"cny", @"月费（¥）", @96, @84, @"cny", @NO],
+        @[@"supplier", @"供应商", @96, @70, @"supplier", @NO],
+        @[@"card", @"卡尾号", @64, @56, @"card", @NO],
+        @[@"paymentMethod", @"付款方式", @80, @60, @"paymentMethod", @YES],
+        @[@"lastPayment", @"上次付款", @92, @80, @"lastPayment", @YES],
+        @[@"price", @"月费（原币）", @112, @104, @"price", @YES],
+        @[@"email", @"邮箱", @170, @110, @"email", @YES],
         @[@"group", @"分组", @80, @48, @"group", @YES],
         @[@"signedIn", @"登录", @56, @48, @"signedIn", @YES],
         @[@"lastUsedAt", @"最近使用", @84, @60, @"lastUsedAt", @YES],
@@ -43,13 +48,18 @@ static NSArray<NSArray *> *ColumnSpecs(void) {
 
 static id SortValue(Account *account, NSString *key, NSDate *now) {
     if ([key isEqualToString:@"name"]) return account.name;
-    if ([key isEqualToString:@"status"]) return @([AccountStatus statusForAccount:account recommended:NO now:now].kind);
+    if ([key isEqualToString:@"status"]) return @([AccountStatus statusForAccount:account now:now].kind);
     if ([key isEqualToString:@"plan"]) return account.planRank ? @(account.planRank) : nil;
     if ([key isEqualToString:@"tags"]) return account.tags.firstObject;
     if ([key isEqualToString:@"short"]) return account.usage.shortWindow ? @(account.usage.shortWindow.remainingPercent) : nil;
     if ([key isEqualToString:@"long"]) return account.usage.longWindow ? @(account.usage.longWindow.remainingPercent) : nil;
     if ([key isEqualToString:@"expiresAt"]) return account.expiresAt;
     if ([key isEqualToString:@"price"]) return account.monthlyPrice;
+    if ([key isEqualToString:@"cny"]) return AccountAmountInCNY(account.monthlyPrice, account.currency, AccountExchangeRates());
+    if ([key isEqualToString:@"supplier"]) return account.supplier.length ? account.supplier : nil;
+    if ([key isEqualToString:@"card"]) return account.cardLast4.length ? account.cardLast4 : nil;
+    if ([key isEqualToString:@"paymentMethod"]) return account.paymentMethod.length ? account.paymentMethod : nil;
+    if ([key isEqualToString:@"lastPayment"]) return account.lastPayment.date;
     if ([key isEqualToString:@"email"]) return account.email.length ? account.email : nil;
     if ([key isEqualToString:@"group"]) return account.group.length ? account.group : nil;
     if ([key isEqualToString:@"signedIn"]) return account.signedIn;
@@ -62,7 +72,7 @@ static id SortValue(Account *account, NSString *key, NSDate *now) {
 static NSArray<NSArray *> *SortChoices(void) {
     return @[@[@"默认顺序", @"", @YES], @[@"需处理优先", @"status", @NO], @[@"每周额度（多→少）", @"long", @NO],
              @[@"5 小时额度（多→少）", @"short", @NO],
-             @[@"续费 / 到期日期", @"expiresAt", @YES], @[@"月费（高→低）", @"price", @NO], @[@"名称", @"name", @YES]];
+             @[@"续费 / 到期日期", @"expiresAt", @YES], @[@"月费（高→低，按人民币）", @"cny", @NO], @[@"上次付款（近→远）", @"lastPayment", @NO], @[@"名称", @"name", @YES]];
 }
 
 #pragma mark - Summary chip
@@ -341,6 +351,7 @@ static NSArray<NSArray *> *SortChoices(void) {
         @[@"导入账号资料…", @"square.and.arrow.down", NSStringFromSelector(@selector(importAccounts:))],
         @[@"导出全部账号资料…", @"square.and.arrow.up", NSStringFromSelector(@selector(exportAccounts:))],
         @[@"导出续费日历（.ics）…", @"calendar.badge.plus", NSStringFromSelector(@selector(exportRenewalCalendar:))],
+        @[@"导出付款记录（CSV）…", @"tablecells", NSStringFromSelector(@selector(exportPaymentsCSV:))],
         @[],
         @[@"刷新全部用量", @"arrow.triangle.2.circlepath", NSStringFromSelector(@selector(refreshAllUsage:))],
         @[@"后台读取全部账号账单", @"creditcard", NSStringFromSelector(@selector(readAllBilling:))],
@@ -452,7 +463,7 @@ static NSArray<NSArray *> *SortChoices(void) {
     }
     headerMenu.delegate = self;
     self.tableView.headerView.menu = headerMenu;
-    self.tableView.autosaveName = @"AccountManagementTable.v3";
+    self.tableView.autosaveName = @"AccountManagementTable.v4";
     self.tableView.autosaveTableColumns = YES;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -672,15 +683,18 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.expiryChip.text = [NSString stringWithFormat:@"即将到期 %lu", (unsigned long)expiring];
     self.expiryChip.hidden = expiring == 0 && self.scope.kind != ManagementScopeExpiring;
     NSDictionary<NSString *, NSNumber *> *spend = store.monthlySpendByCurrency;
-    NSArray<NSString *> *currencies = [spend.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-        return [spend[b] compare:spend[a]];
-    }];
     NSMutableArray<NSString *> *amounts = [NSMutableArray array];
-    for (NSString *currency in currencies) [amounts addObject:AccountFormatMoney(spend[currency], currency)];
-    self.spendChip.text = amounts.count
-        ? [NSString stringWithFormat:@"%@/月%@", amounts.firstObject, amounts.count > 1 ? @" 等" : @""] : @"续费日历";
+    for (NSString *currency in [spend.allKeys sortedArrayUsingSelector:@selector(compare:)])
+        [amounts addObject:AccountFormatMoney(spend[currency], currency)];
+    NSArray<NSString *> *missing = nil;
+    double monthly = [store monthlySpendInCNYWithRates:AccountExchangeRates() missingCurrencies:&missing];
+    self.spendChip.text = !amounts.count ? @"续费日历"
+        : [NSString stringWithFormat:@"%@/月%@", AccountFormatCNY(@(monthly)), missing.count ? @" + 未换算" : @""];
     self.spendChip.toolTip = amounts.count
-        ? [NSString stringWithFormat:@"每月支出：%@\n点击查看续费日历", [amounts componentsJoinedByString:@" + "]] : @"查看续费日历";
+        ? [NSString stringWithFormat:@"每月支出（折合人民币）：%@\n原币：%@%@\n点击查看续费日历", AccountFormatCNY(@(monthly)),
+            [amounts componentsJoinedByString:@" + "],
+            missing.count ? [NSString stringWithFormat:@"\n%@ 未设汇率，未计入；可在“设置 → 费用”中填写", [missing componentsJoinedByString:@"、"]] : @""]
+        : @"查看续费日历";
     [self updateChipHighlights];
 
     self.rows = [self sortedAccounts:visible];
@@ -867,10 +881,8 @@ static NSArray<NSArray *> *SortChoices(void) {
     item.coordinator = self.coordinator;
     __weak typeof(self) weakSelf = self;
     item.menuAccountIDs = ^NSArray<NSString *> *(NSString *identifier) { return [weakSelf menuIDsForAccountID:identifier]; };
-    NSString *recommended = self.coordinator.recommendedAccountID;
     BOOL busy = [self.coordinator isRefreshingAccountID:account.identifier] || [self.coordinator isReadingBillingForAccountID:account.identifier];
-    [item configureWithAccount:account status:[AccountStatus statusForAccount:account
-        recommended:[recommended isEqualToString:account.identifier] now:NSDate.date] busy:busy now:NSDate.date];
+    [item configureWithAccount:account status:[AccountStatus statusForAccount:account now:NSDate.date] busy:busy now:NSDate.date];
     return item;
 }
 
@@ -951,8 +963,7 @@ static NSArray<NSArray *> *SortChoices(void) {
             cell = [[ManagementPillCell alloc] initWithFrame:NSZeroRect];
             cell.identifier = @"StatusCell";
         }
-        AccountStatus *status = [AccountStatus statusForAccount:account
-            recommended:[self.coordinator.recommendedAccountID isEqualToString:account.identifier] now:now];
+        AccountStatus *status = [AccountStatus statusForAccount:account now:now];
         [cell.pill showStatus:status showsNormal:NO];
         cell.toolTip = account.refreshError.length ? account.refreshError : status.title;
         return cell;
@@ -1004,6 +1015,28 @@ static NSArray<NSArray *> *SortChoices(void) {
     } else if ([column isEqualToString:@"price"]) {
         if (account.monthlyPrice) value = AccountFormatMoney(account.monthlyPrice, account.currency);
         label.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+    } else if ([column isEqualToString:@"cny"]) {
+        NSNumber *cny = AccountAmountInCNY(account.monthlyPrice, account.currency, AccountExchangeRates());
+        if (cny) value = AccountFormatCNY(cny);
+        else if (account.monthlyPrice) {
+            value = @"未设汇率";
+            label.textColor = NSColor.systemOrangeColor;
+        }
+        if (account.monthlyPrice) cell.toolTip = AccountFormatMoney(account.monthlyPrice, account.currency);
+        label.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+    } else if ([column isEqualToString:@"supplier"]) {
+        if (account.supplier.length) value = account.supplier;
+    } else if ([column isEqualToString:@"card"]) {
+        if (account.cardLast4.length) value = account.cardLast4;
+        label.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+    } else if ([column isEqualToString:@"paymentMethod"]) {
+        if (account.paymentMethod.length) value = account.paymentMethod;
+    } else if ([column isEqualToString:@"lastPayment"]) {
+        AccountPayment *last = account.lastPayment;
+        if (last) {
+            value = last.date;
+            cell.toolTip = AccountFormatMoney(last.amount, last.currency);
+        }
     } else if ([column isEqualToString:@"email"]) {
         if (account.email.length) value = account.email;
     } else if ([column isEqualToString:@"group"]) {
