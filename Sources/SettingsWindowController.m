@@ -139,6 +139,7 @@ static NSString *BackupTime(NSDate *date) {
 @property (nonatomic, strong) NSTextField *folderField;
 @property (nonatomic, strong) NSButton *webdavToggle;
 @property (nonatomic, strong) NSTextField *webdavStatus;
+@property (nonatomic, strong) NSTextField *webdavInsecure;
 @property (nonatomic, strong) NSArray<NSButton *> *webdavButtons;
 // Cost
 @property (nonatomic, strong) NSStackView *ratesStack;
@@ -463,10 +464,14 @@ static NSString *BackupTime(NSDate *date) {
     NSButton *restoreRemote = [NSButton buttonWithTitle:@"从 WebDAV 恢复…" target:self action:@selector(restoreRemote:)];
     self.webdavButtons = @[test, upload, restoreRemote];
     self.webdavStatus = Hint(@"");
+    self.webdavInsecure = Hint(@"⚠︎ 这是不加密的 HTTP 地址：WebDAV 密码和备份内容（邮箱、付款信息、授权记录等）会以明文在网络上传输。"
+        "建议只在可信网络中使用，或为服务配置 HTTPS。");
+    self.webdavInsecure.textColor = NSColor.systemOrangeColor;
+    [self updateInsecureWarning];
 
     return @[Title(@"本机备份"), self.autoBackupToggle, Row(@[backupNow, reveal, restoreLocal]), self.localStatus,
         DeskSeparator(), Title(@"WebDAV"),
-        [self formRow:@"服务器" field:self.serverField], [self formRow:@"用户名" field:self.usernameField],
+        [self formRow:@"服务器" field:self.serverField], self.webdavInsecure, [self formRow:@"用户名" field:self.usernameField],
         [self formRow:@"密码" field:self.passwordField], [self formRow:@"远程目录" field:self.folderField],
         self.webdavToggle, Row(@[test, upload, restoreRemote]), self.webdavStatus,
         Hint(@"备份只包含账号资料（名称、邮箱、订阅、分组、标签、备注、授权链接），不含密码、登录状态、访问令牌和代理密码。"
@@ -474,6 +479,20 @@ static NSString *BackupTime(NSDate *date) {
 }
 
 - (void)backupStateChanged:(NSNotification *)notification { [self refreshBackupStatus]; }
+
+- (void)updateInsecureWarning {
+    NSURL *url = [NSURL URLWithString:[self.serverField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet]];
+    NSString *host = url.host.lowercaseString;
+    BOOL loopback = [host isEqualToString:@"localhost"] || [host hasPrefix:@"127."] || [host isEqualToString:@"::1"];
+    BOOL hidden = ![url.scheme.lowercaseString isEqualToString:@"http"] || loopback;
+    if (self.webdavInsecure.hidden == hidden) return;
+    self.webdavInsecure.hidden = hidden;
+    if (self.window.isVisible) [self.tabs fitItem:self.tabs.tabView.selectedTabViewItem];
+}
+
+- (void)controlTextDidChange:(NSNotification *)notification {
+    if (notification.object == self.serverField) [self updateInsecureWarning];
+}
 
 - (void)refreshBackupStatus {
     if (!self.localStatus) return;

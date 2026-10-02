@@ -160,6 +160,10 @@ static NSString *DirectoryPath(NSString *path) {
     void (^handler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
         NSString *failure = error ? (error.localizedDescription ?: @"无法连接 WebDAV 服务器") : nil;
+        if (error.code == NSURLErrorAppTransportSecurityRequiresSecureConnection)
+            failure = @"系统阻止了不加密的 HTTP 连接，请改用 HTTPS 地址";
+        else if (error.code == NSURLErrorTimedOut) failure = @"连接 WebDAV 服务器超时，请检查地址、端口和网络";
+        else if (error.code == NSURLErrorCannotConnectToHost) failure = @"无法连接到 WebDAV 服务器，请检查地址和端口";
         completion(status, data, failure);
     };
     NSURLSessionTask *task = body ? [self.session uploadTaskWithRequest:request fromData:body completionHandler:handler]
