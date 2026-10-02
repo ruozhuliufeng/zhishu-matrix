@@ -17,7 +17,7 @@ open "build/智枢矩阵.app"
 zsh scripts/test.sh
 ```
 
-仓库中的 `dist/Zhishu-Matrix-v0.2.9-macos.zip` 是 0.2.9 版本的 macOS 应用包（Apple 芯片），解压后即可得到 `智枢矩阵.app`；之前版本的应用包仍保留在 `dist/` 中。
+仓库中的 `dist/Zhishu-Matrix-v0.3.0-macos.zip` 是 0.3.0 版本的 macOS 应用包（Apple 芯片），解压后即可得到 `智枢矩阵.app`；之前版本的应用包仍保留在 `dist/` 中。
 
 图标母图为 `Resources/AppIcon-source.png`；构建脚本会生成多尺寸的 `Resources/AppIcon.icns` 并放入应用包。
 
