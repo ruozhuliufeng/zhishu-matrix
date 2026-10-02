@@ -29,8 +29,10 @@ static NSArray<NSArray *> *ColumnSpecs(void) {
         @[@"status", @"状态", @96, @76, @"status", @NO],
         @[@"plan", @"订阅", @80, @66, @"plan", @NO],
         @[@"tags", @"标签", @110, @84, @"tags", @NO],
+        @[@"completeness", @"资料", @86, @64, @"completeness", @NO],
+        @[@"authorizations", @"第三方授权", @120, @84, @"authorizations", @NO],
         @[@"short", @"5 小时", @104, @84, @"short", @YES],
-        @[@"long", @"每周", @104, @84, @"long", @NO],
+        @[@"long", @"每周", @104, @84, @"long", @YES],
         @[@"renewal", @"续费 / 到期", @130, @112, @"expiresAt", @NO],
         @[@"cny", @"月费（¥）", @96, @84, @"cny", @NO],
         @[@"supplier", @"供应商", @96, @70, @"supplier", @NO],
@@ -60,6 +62,8 @@ static id SortValue(Account *account, NSString *key, NSDate *now) {
     if ([key isEqualToString:@"card"]) return account.cardLast4.length ? account.cardLast4 : nil;
     if ([key isEqualToString:@"paymentMethod"]) return account.paymentMethod.length ? account.paymentMethod : nil;
     if ([key isEqualToString:@"lastPayment"]) return account.lastPayment.date;
+    if ([key isEqualToString:@"completeness"]) return @(AccountMissingFields(account, now).count);
+    if ([key isEqualToString:@"authorizations"]) return @(account.activeAuthorizations.count);
     if ([key isEqualToString:@"email"]) return account.email.length ? account.email : nil;
     if ([key isEqualToString:@"group"]) return account.group.length ? account.group : nil;
     if ([key isEqualToString:@"signedIn"]) return account.signedIn;
@@ -256,6 +260,7 @@ static NSArray<NSArray *> *SortChoices(void) {
 @property (nonatomic, strong) NSTextField *summaryLabel;
 @property (nonatomic, strong) ManagementChip *quotaChip;
 @property (nonatomic, strong) ManagementChip *expiryChip;
+@property (nonatomic, strong) ManagementChip *incompleteChip;
 @property (nonatomic, strong) ManagementChip *spendChip;
 @property (nonatomic, strong) NSSearchField *searchField;
 @property (nonatomic, strong) NSPopUpButton *planFilter;
@@ -323,12 +328,14 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.quotaChip.toolTip = [NSString stringWithFormat:@"5 小时或每周额度剩余不足 %.0f%% 的账号", AccountLowQuotaPercent];
     self.expiryChip = [[ManagementChip alloc] initWithSymbol:@"clock.badge.exclamationmark" tint:NSColor.systemOrangeColor];
     self.expiryChip.toolTip = @"7 天内到期或已过期、且不会自动续费的账号";
+    self.incompleteChip = [[ManagementChip alloc] initWithSymbol:@"list.bullet.clipboard" tint:NSColor.systemBrownColor];
+    self.incompleteChip.toolTip = @"缺少邮箱、订阅、续费日期、月费、供应商、付款方式、卡尾号或付款记录的账号";
     self.spendChip = [[ManagementChip alloc] initWithSymbol:@"creditcard" tint:NSColor.systemPurpleColor];
-    for (ManagementChip *chip in @[self.quotaChip, self.expiryChip, self.spendChip]) {
+    for (ManagementChip *chip in @[self.quotaChip, self.expiryChip, self.incompleteChip, self.spendChip]) {
         chip.target = self;
         chip.action = @selector(chipClicked:);
     }
-    NSStackView *chips = [NSStackView stackViewWithViews:@[self.quotaChip, self.expiryChip, self.spendChip]];
+    NSStackView *chips = [NSStackView stackViewWithViews:@[self.quotaChip, self.expiryChip, self.incompleteChip, self.spendChip]];
     chips.spacing = 6;
     [chips setHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
 
@@ -463,7 +470,7 @@ static NSArray<NSArray *> *SortChoices(void) {
     }
     headerMenu.delegate = self;
     self.tableView.headerView.menu = headerMenu;
-    self.tableView.autosaveName = @"AccountManagementTable.v4";
+    self.tableView.autosaveName = @"AccountManagementTable.v5";
     self.tableView.autosaveTableColumns = YES;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -654,7 +661,7 @@ static NSArray<NSArray *> *SortChoices(void) {
     NSSet *duplicates = AccountDuplicateIDs(accounts);
     ManagementScope *quotaScope = [ManagementScope scopeWithKind:ManagementScopeQuotaLow value:nil];
     ManagementScope *expiringScope = [ManagementScope scopeWithKind:ManagementScopeExpiring value:nil];
-    NSUInteger paid = 0, signedIn = 0, low = 0, expiring = 0;
+    NSUInteger paid = 0, signedIn = 0, low = 0, expiring = 0, incomplete = 0;
     NSDate *latest = nil;
     NSMutableArray<Account *> *visible = [NSMutableArray array];
     for (Account *account in accounts) {
@@ -662,6 +669,7 @@ static NSArray<NSArray *> *SortChoices(void) {
         if (account.signedIn.boolValue) signedIn++;
         if ([quotaScope includesAccount:account now:now duplicateIDs:duplicates]) low++;
         if ([expiringScope includesAccount:account now:now duplicateIDs:duplicates]) expiring++;
+        if (AccountMissingFields(account, now).count) incomplete++;
         if (account.usage && (!latest || [account.usage.fetchedAt compare:latest] == NSOrderedDescending)) latest = account.usage.fetchedAt;
         if ([self account:account passesFiltersAt:now duplicateIDs:duplicates]) [visible addObject:account];
     }
@@ -682,6 +690,8 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.quotaChip.hidden = low == 0 && self.scope.kind != ManagementScopeQuotaLow;
     self.expiryChip.text = [NSString stringWithFormat:@"即将到期 %lu", (unsigned long)expiring];
     self.expiryChip.hidden = expiring == 0 && self.scope.kind != ManagementScopeExpiring;
+    self.incompleteChip.text = [NSString stringWithFormat:@"资料不完整 %lu", (unsigned long)incomplete];
+    self.incompleteChip.hidden = incomplete == 0 && self.scope.kind != ManagementScopeIncomplete;
     NSDictionary<NSString *, NSNumber *> *spend = store.monthlySpendByCurrency;
     NSMutableArray<NSString *> *amounts = [NSMutableArray array];
     for (NSString *currency in [spend.allKeys sortedArrayUsingSelector:@selector(compare:)])
@@ -721,6 +731,7 @@ static NSArray<NSArray *> *SortChoices(void) {
 - (void)updateChipHighlights {
     self.quotaChip.active = self.scope.kind == ManagementScopeQuotaLow;
     self.expiryChip.active = self.scope.kind == ManagementScopeExpiring;
+    self.incompleteChip.active = self.scope.kind == ManagementScopeIncomplete;
     self.spendChip.active = self.viewMode == ManagementViewCalendar;
 }
 
@@ -793,7 +804,8 @@ static NSArray<NSArray *> *SortChoices(void) {
         [self switchToView:self.viewMode == ManagementViewCalendar ? ManagementViewCards : ManagementViewCalendar];
         return;
     }
-    ManagementScopeKind kind = chip == self.quotaChip ? ManagementScopeQuotaLow : ManagementScopeExpiring;
+    ManagementScopeKind kind = chip == self.quotaChip ? ManagementScopeQuotaLow
+        : (chip == self.incompleteChip ? ManagementScopeIncomplete : ManagementScopeExpiring);
     ManagementScope *scope = self.scope.kind == kind ? ManagementScope.all : [ManagementScope scopeWithKind:kind value:nil];
     if (self.viewMode == ManagementViewCalendar) [self switchToView:ManagementViewCards];
     self.scope = scope;
@@ -1024,6 +1036,20 @@ static NSArray<NSArray *> *SortChoices(void) {
         }
         if (account.monthlyPrice) cell.toolTip = AccountFormatMoney(account.monthlyPrice, account.currency);
         label.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+    } else if ([column isEqualToString:@"completeness"]) {
+        NSArray<NSString *> *missing = AccountMissingFields(account, now);
+        value = missing.count ? [NSString stringWithFormat:@"缺 %lu 项", (unsigned long)missing.count] : @"完整";
+        label.textColor = missing.count ? NSColor.systemBrownColor : NSColor.secondaryLabelColor;
+        cell.toolTip = missing.count ? [@"缺少：" stringByAppendingString:[missing componentsJoinedByString:@"、"]] : @"资料已填写完整";
+    } else if ([column isEqualToString:@"authorizations"]) {
+        NSArray<AccountAuthorization *> *active = account.activeAuthorizations;
+        if (active.count) {
+            value = [[active valueForKey:@"appName"] componentsJoinedByString:@"、"];
+            NSMutableArray *lines = [NSMutableArray array];
+            for (AccountAuthorization *item in active)
+                [lines addObject:[NSString stringWithFormat:@"%@ · 最近 %@", item.appName, DeskDateTimeString(item.lastAuthorizedAt)]];
+            cell.toolTip = [lines componentsJoinedByString:@"\n"];
+        }
     } else if ([column isEqualToString:@"supplier"]) {
         if (account.supplier.length) value = account.supplier;
     } else if ([column isEqualToString:@"card"]) {

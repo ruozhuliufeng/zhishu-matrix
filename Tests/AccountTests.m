@@ -344,8 +344,14 @@ static void TestInsights(void) {
     AccountStatus *soon = [AccountStatus statusForAccount:healthy now:today];
     CHECK(soon.kind == AccountStatusExpiringSoon && [soon.title isEqualToString:@"3 天后到期"], "reports an expiry within a week");
     healthy.autoRenew = @YES;
-    CHECK([AccountStatus statusForAccount:healthy now:today].kind == AccountStatusNormal, "an auto-renewing date is not a risk");
-    CHECK([AccountStatus statusForAccount:fresh now:today].kind == AccountStatusNormal, "no data is normal");
+    AccountStatus *renewing = [AccountStatus statusForAccount:healthy now:today];
+    CHECK(renewing.kind != AccountStatusExpiringSoon && renewing.tone == AccountStatusToneNeutral, "an auto-renewing date is not a risk");
+    AccountStatus *bare = [AccountStatus statusForAccount:fresh now:today];
+    CHECK(bare.kind == AccountStatusIncomplete && [bare.title isEqualToString:@"资料缺 2 项"] && bare.tone == AccountStatusToneNeutral,
+        "an empty record is incomplete, not alarming");
+    fresh.email = @"fresh@example.com";
+    fresh.plan = @"Free";
+    CHECK([AccountStatus statusForAccount:fresh now:today].kind == AccountStatusNormal, "a free account needs only email and plan");
     fresh.refreshError = @"HTTP 500";
     CHECK([AccountStatus statusForAccount:fresh now:today].kind == AccountStatusRefreshFailed, "reports refresh failures");
 
@@ -639,6 +645,103 @@ static void TestBillingPayments(void) {
     CHECK([SubscriptionParser supplierFromBillingText:billing] == nil, "web subscriptions name no store");
 }
 
+static void TestAuthorizationRecords(void) {
+    NSURL *link = [NSURL URLWithString:@"https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_123"
+        "&redirect_uri=https%3A%2F%2Fwww.example.com%2Fauth%2Fcallback&scope=openid%20email&state=xyz"];
+    NSDictionary *request = AuthorizationRequestFromURL(link);
+    CHECK([request[@"clientID"] isEqualToString:@"app_123"] && [request[@"redirect"] isEqualToString:@"https://www.example.com/auth/callback"]
+        && [request[@"scope"] isEqualToString:@"openid email"], "reads client_id, redirect_uri and scope");
+    CHECK(AuthorizationRequestFromURL([NSURL URLWithString:@"https://chatgpt.com/"]) == nil, "an ordinary page is no request");
+    CHECK(AuthorizationURLMatchesRedirect([NSURL URLWithString:@"https://www.example.com/auth/callback?code=1"], request[@"redirect"]) &&
+        !AuthorizationURLMatchesRedirect([NSURL URLWithString:@"https://www.example.com/other?code=1"], request[@"redirect"]),
+        "matches the redirect address by origin and path");
+    CHECK(AuthorizationCallbackSucceeded([NSURL URLWithString:@"https://x.test/cb?code=abc&state=1"]) &&
+        !AuthorizationCallbackSucceeded([NSURL URLWithString:@"https://x.test/cb?error=access_denied"]) &&
+        AuthorizationCallbackSucceeded([NSURL URLWithString:@"https://x.test/cb#access_token=t"]), "tells success from refusal");
+    CHECK([AuthorizationAppName(request[@"redirect"]) isEqualToString:@"example.com"] &&
+        [AuthorizationAppName(@"http://localhost:1455/auth/callback") isEqualToString:@"本机应用（localhost:1455）"] &&
+        [AuthorizationAppName(@"cursor://auth/callback") isEqualToString:@"cursor"], "names apps after their redirect address");
+
+    Account *account = [[Account alloc] initWithDictionary:@{@"id": WorkID, @"name": @"主力"}];
+    NSDate *first = [NSDate dateWithTimeIntervalSince1970:1790000000];
+    AccountAuthorization *entry = [account recordAuthorizationWithClientID:@"app_123" redirect:request[@"redirect"] scope:@"openid"
+        appName:@"example.com" at:first];
+    entry.appName = @"示例应用";
+    entry.revokedAt = first;
+    CHECK(account.activeAuthorizations.count == 0, "revoked authorizations are not active");
+    AccountAuthorization *again = [account recordAuthorizationWithClientID:@"app_123" redirect:@"https://www.example.com/auth/callback"
+        scope:@"openid email" appName:@"example.com" at:[first dateByAddingTimeInterval:86400]];
+    CHECK(again == entry && account.authorizations.count == 1 && entry.count == 2 && !entry.revoked,
+        "authorizing the same app again revives and counts the entry");
+    CHECK([entry.appName isEqualToString:@"示例应用"] && [entry.scope isEqualToString:@"openid email"], "keeps the given name");
+    [account recordAuthorizationWithClientID:nil redirect:@"http://localhost:8765/cb" scope:nil appName:@"本机应用（localhost:8765）"
+        at:[first dateByAddingTimeInterval:172800]];
+    CHECK(account.authorizations.count == 2 && [account.authorizations.firstObject.redirect isEqualToString:@"http://localhost:8765/cb"],
+        "a different app gets its own entry, newest first");
+    CHECK([account matchesSearch:@"示例"], "search covers authorized apps");
+
+    Account *reloaded = [[Account alloc] initWithDictionary:account.dictionaryRepresentation];
+    AccountAuthorization *saved = reloaded.authorizations.lastObject;
+    CHECK(reloaded.authorizations.count == 2 && [saved.identifier isEqualToString:entry.identifier] && saved.count == 2 &&
+        [saved.firstAuthorizedAt isEqualToDate:first] && [account.exportRepresentation[@"authorizations"] count] == 2,
+        "saves and exports authorization records");
+
+    NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+    AccountStore *store = [[AccountStore alloc] initWithFileURL:url];
+    [store load:nil];
+    Account *one = [store addAccountNamed:@"一" group:nil];
+    Account *two = [store addAccountNamed:@"二" group:nil];
+    [one recordAuthorizationWithClientID:@"a" redirect:nil scope:nil appName:@"Notion" at:first];
+    [two recordAuthorizationWithClientID:@"b" redirect:nil scope:nil appName:@"Cursor" at:first];
+    [two recordAuthorizationWithClientID:@"c" redirect:nil scope:nil appName:@"Zed" at:first].revokedAt = first;
+    NSArray *apps = store.authorizedApps;
+    NSArray *expectedApps = @[@"Cursor", @"Notion"];
+    CHECK([apps isEqualToArray:expectedApps], "lists apps with active authorizations");
+    ManagementScope *cursor = [ManagementScope scopeWithKind:ManagementScopeAuthorizedApp value:@"Cursor"];
+    CHECK([cursor includesAccount:two now:first duplicateIDs:[NSSet set]] && ![cursor includesAccount:one now:first duplicateIDs:[NSSet set]],
+        "the app list shows the accounts that authorized it");
+    CHECK([[ManagementScope scopeFromString:cursor.stringValue] isEqual:cursor] &&
+        [ManagementScope scopeFromString:@"incomplete"].kind == ManagementScopeIncomplete &&
+        [ManagementScope scopeFromString:@"incomplete:x"] == nil && [ManagementScope scopeFromString:@"app"] == nil,
+        "round-trips the new lists");
+    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+}
+
+static void TestCompleteness(void) {
+    NSDate *now = AccountDateFromDayString(@"2026-10-02");
+    Account *account = [Account accountWithName:@"空"];
+    NSArray *missing = AccountMissingFields(account, now);
+    NSArray *bare = @[@"邮箱", @"订阅级别"];
+    CHECK([missing isEqualToArray:bare], "an empty record lacks email and plan");
+    account.email = @"a@example.com";
+    account.plan = @"Pro 200";
+    missing = AccountMissingFields(account, now);
+    NSArray *paid = @[@"续费 / 到期日期", @"月费", @"供应商", @"付款方式", @"付款记录"];
+    CHECK([missing isEqualToArray:paid], "a paid account needs renewal, price, supplier, method and payments");
+    account.expiresAt = @"2026-10-25";
+    account.monthlyPrice = @1599;
+    account.supplier = @"iOS";
+    account.paymentMethod = @"信用卡";
+    NSArray *card = @[@"币种", @"卡尾号", @"付款记录"];
+    CHECK([AccountMissingFields(account, now) isEqualToArray:card], "a card payment needs its last digits; a price needs a currency");
+    account.paymentMethod = @"礼品卡 / 余额";
+    CHECK(![AccountMissingFields(account, now) containsObject:@"卡尾号"], "gift cards have no card number");
+    account.currency = @"CNY";
+    account.autoRenew = @YES;
+    [account addPayments:@[[[AccountPayment alloc] initWithDictionary:@{@"date": @"2026-08-20", @"amount": @1599, @"currency": @"CNY"}]]];
+    NSArray *stale = @[@"近 35 天未记付款"];
+    CHECK([AccountMissingFields(account, now) isEqualToArray:stale], "an auto-renewing account with no recent payment is flagged");
+    [account addPayments:@[[[AccountPayment alloc] initWithDictionary:@{@"date": @"2026-09-20", @"amount": @1599, @"currency": @"CNY"}]]];
+    CHECK(AccountMissingFields(account, now).count == 0, "a complete record lacks nothing");
+    CHECK([AccountStatus statusForAccount:account now:now].kind == AccountStatusNormal, "and has no status");
+    account.autoRenew = @NO;
+    account.expiresAt = @"2026-10-05";
+    CHECK([AccountStatus statusForAccount:account now:now].kind == AccountStatusExpiringSoon, "real risks outrank completeness");
+    ManagementScope *incomplete = [ManagementScope scopeWithKind:ManagementScopeIncomplete value:nil];
+    account.supplier = @"";
+    CHECK([incomplete includesAccount:account now:now duplicateIDs:[NSSet set]], "the incomplete list includes it");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -659,6 +762,8 @@ int main(void) {
         TestScopes();
         TestPayments();
         TestBillingPayments();
+        TestAuthorizationRecords();
+        TestCompleteness();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

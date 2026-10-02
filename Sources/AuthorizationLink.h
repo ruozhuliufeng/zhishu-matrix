@@ -17,4 +17,15 @@ BOOL AuthorizationIsLoopbackURL(NSURL *_Nullable url);
 /// scheme://host:port, used to tell a callback apart from the page that started the flow.
 NSString *AuthorizationOrigin(NSURL *url);
 
+/// {@"clientID", @"redirect", @"scope"} from an OAuth authorize link (keys only when present);
+/// nil when the link names neither a client nor a redirect address.
+NSDictionary<NSString *, NSString *> *_Nullable AuthorizationRequestFromURL(NSURL *_Nullable url);
+/// Whether `url` is the redirect address: same scheme, host, port and path.
+BOOL AuthorizationURLMatchesRedirect(NSURL *_Nullable url, NSString *_Nullable redirect);
+/// Whether a callback carries an authorization code rather than an error such as access_denied.
+BOOL AuthorizationCallbackSucceeded(NSURL *_Nullable url);
+/// A readable default name for the app behind a redirect address: "app.example.com", "cursor",
+/// "本机应用（localhost:1455）".
+NSString *AuthorizationAppName(NSString *_Nullable redirect);
+
 NS_ASSUME_NONNULL_END

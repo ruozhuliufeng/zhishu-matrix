@@ -10,7 +10,7 @@ static NSString *const UnknownPlanTitle = @"未获取";
 
 /// Sections collapsed when nothing was saved yet for a mode: management favours the overview, browsing the essentials.
 static NSArray<NSString *> *DefaultCollapsedSections(DeskMode mode) {
-    return mode == DeskModeManagement ? @[@"auth", @"network", @"notes", @"record"] : @[@"network", @"record"];
+    return mode == DeskModeManagement ? @[@"network", @"notes", @"record"] : @[@"network", @"record"];
 }
 
 static NSString *CollapsedDefaultsKey(DeskMode mode) {
@@ -59,6 +59,12 @@ static NSString *SourceName(NSString *source, id value) {
 @property (nonatomic, strong) NSButton *billingButton;
 @property (nonatomic, strong) NSProgressIndicator *billingSpinner;
 @property (nonatomic, strong) NSTextField *cnyLabel;
+@property (nonatomic, strong) NSButton *completenessButton;
+@property (nonatomic, copy) NSArray<NSString *> *missingFields;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSView *> *sectionViews;
+@property (nonatomic, strong) NSTableView *authTable;
+@property (nonatomic, strong) NSTextField *authSummary;
+@property (nonatomic, copy) NSArray<AccountAuthorization *> *authRows;
 @property (nonatomic, strong) NSComboBox *supplierBox;
 @property (nonatomic, strong) NSComboBox *methodBox;
 @property (nonatomic, strong) NSTextField *cardField;
@@ -101,6 +107,7 @@ static NSString *SourceName(NSString *source, id value) {
         _sectionBodies = [NSMutableDictionary dictionary];
         _sectionHeaders = [NSMutableDictionary dictionary];
         _sectionSummaries = [NSMutableDictionary dictionary];
+        _sectionViews = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -158,6 +165,7 @@ static NSString *SourceName(NSString *source, id value) {
     self.sectionBodies[identifier] = body;
     self.sectionHeaders[identifier] = header;
     self.sectionSummaries[identifier] = summary;
+    self.sectionViews[identifier] = section;
     return section;
 }
 
@@ -240,6 +248,12 @@ static NSString *SourceName(NSString *source, id value) {
     self.duplicateLabel = [NSTextField wrappingLabelWithString:@""];
     self.duplicateLabel.font = [NSFont systemFontOfSize:11];
     self.duplicateLabel.textColor = NSColor.systemOrangeColor;
+    self.completenessButton = [NSButton buttonWithTitle:@"" target:self action:@selector(revealMissingFields:)];
+    self.completenessButton.bordered = NO;
+    self.completenessButton.alignment = NSTextAlignmentLeft;
+    self.completenessButton.toolTip = @"展开需要补充的分区";
+    ((NSButtonCell *)self.completenessButton.cell).wraps = YES;
+    ((NSButtonCell *)self.completenessButton.cell).lineBreakMode = NSLineBreakByWordWrapping;
 
     // Profile
     self.nameField = [NSTextField new];
@@ -429,6 +443,38 @@ static NSString *SourceName(NSString *source, id value) {
         @"用此账号授权第三方应用或网站的“使用 ChatGPT 登录”：粘贴对方给出的授权链接，授权后会自动跳回对方完成登录。"];
     authHint.font = [NSFont systemFontOfSize:11];
     authHint.textColor = NSColor.secondaryLabelColor;
+    self.authTable = [NSTableView new];
+    self.authTable.style = NSTableViewStylePlain;
+    self.authTable.usesAlternatingRowBackgroundColors = YES;
+    self.authTable.rowHeight = 22;
+    self.authTable.intercellSpacing = NSMakeSize(6, 2);
+    self.authTable.columnAutoresizingStyle = NSTableViewFirstColumnOnlyAutoresizingStyle;
+    for (NSArray *spec in @[@[@"app", @"应用", @110], @[@"last", @"最近授权", @86], @[@"state", @"状态", @52]]) {
+        NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:spec[0]];
+        column.title = spec[1];
+        column.width = [spec[2] doubleValue];
+        column.minWidth = 46;
+        [self.authTable addTableColumn:column];
+    }
+    self.authTable.dataSource = self;
+    self.authTable.delegate = self;
+    self.authTable.target = self;
+    self.authTable.doubleAction = @selector(editClickedAuthorization:);
+    self.authTable.menu = [NSMenu new];
+    self.authTable.menu.delegate = self;
+    NSScrollView *authScroll = [NSScrollView new];
+    authScroll.documentView = self.authTable;
+    authScroll.hasVerticalScroller = YES;
+    authScroll.autohidesScrollers = YES;
+    authScroll.borderType = NSBezelBorder;
+    [authScroll.heightAnchor constraintEqualToConstant:96].active = YES;
+    self.authSummary = [NSTextField wrappingLabelWithString:@""];
+    self.authSummary.font = [NSFont systemFontOfSize:11];
+    self.authSummary.textColor = NSColor.secondaryLabelColor;
+    NSButton *addAuthorization = DeskButton(@"手动添加…", @"plus", self, @selector(addAuthorization:));
+    addAuthorization.toolTip = @"补记在本应用之外完成的授权";
+    NSStackView *authButtons = [NSStackView stackViewWithViews:@[authButton, addAuthorization]];
+    authButtons.spacing = 8;
 
     // Notes
     NSScrollView *notesScroll = [NSTextView scrollableTextView];
@@ -457,6 +503,7 @@ static NSString *SourceName(NSString *source, id value) {
 
     NSArray<NSView *> *fullWidth = @[
         self.duplicateLabel,
+        self.completenessButton,
         [self sectionWithID:@"usage" title:@"用量" views:@[self.shortRow, self.longRow, self.trendCaption, self.sparkline,
             self.predictionLabel, self.usageLabel, refreshRow]],
         [self sectionWithID:@"profile" title:@"资料" views:@[
@@ -477,7 +524,8 @@ static NSString *SourceName(NSString *source, id value) {
         [self sectionWithID:@"network" title:@"网络" views:@[
             [self fieldWithCaption:@"代理" control:self.proxyField], self.proxyTestButton, self.proxyResult, proxyHint]],
         [self sectionWithID:@"auth" title:@"第三方授权" views:@[
-            [self fieldWithCaption:@"授权链接" control:self.authField], authButton, authHint]],
+            [self fieldWithCaption:@"已授权的应用" control:authScroll], self.authSummary,
+            [self fieldWithCaption:@"授权链接" control:self.authField], authButtons, authHint]],
         [self sectionWithID:@"notes" title:@"备注" views:@[notesScroll]],
         [self sectionWithID:@"record" title:@"记录" views:@[self.recordLabel]],
         DeskSeparator(),
@@ -500,7 +548,7 @@ static NSString *SourceName(NSString *source, id value) {
     [self.sectionBodies[@"subscription"] setCustomSpacing:4 afterView:self.dateToggle];
     [self.sectionBodies[@"payment"] setCustomSpacing:2 afterView:self.cardHint];
     [self.sectionBodies[@"subscription"] setCustomSpacing:6 afterView:self.sourceLabel];
-    [self.sectionBodies[@"auth"] setCustomSpacing:6 afterView:authButton];
+    [self.sectionBodies[@"auth"] setCustomSpacing:6 afterView:authButtons];
     [self.sectionBodies[@"network"] setCustomSpacing:4 afterView:self.proxyTestButton];
 
     // Placeholder for no / multiple selection
@@ -678,7 +726,16 @@ static NSString *SourceName(NSString *source, id value) {
     self.sectionSummaries[@"profile"].stringValue = account.group.length ? account.group : (account.email.length ? account.email : @"");
     self.sectionSummaries[@"subscription"].stringValue = account.monthlyPrice
         ? [NSString stringWithFormat:@"%@ · %@", account.planTitle, AccountFormatMoney(account.monthlyPrice, account.currency)] : account.planTitle;
-    self.sectionSummaries[@"auth"].stringValue = account.authURL.length ? @"已保存链接" : @"";
+    [self reloadAuthorizationsOfAccount:account];
+    NSArray<NSString *> *missing = AccountMissingFields(account, now);
+    self.missingFields = missing;
+    self.completenessButton.hidden = missing.count == 0;
+    if (missing.count) {
+        NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
+                                     NSForegroundColorAttributeName: NSColor.systemBrownColor};
+        self.completenessButton.attributedTitle = [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:
+            @"资料缺 %lu 项：%@ ›", (unsigned long)missing.count, [missing componentsJoinedByString:@"、"]] attributes:attributes];
+    }
     self.sectionSummaries[@"notes"].stringValue = [[account.notes componentsSeparatedByCharactersInSet:
         NSCharacterSet.newlineCharacterSet] componentsJoinedByString:@" "];
 
@@ -741,6 +798,33 @@ static NSString *SourceName(NSString *source, id value) {
     }
     NSString *info = account.paymentSummary;
     self.sectionSummaries[@"payment"].stringValue = info.length ? info : (last ? [@"上次付款 " stringByAppendingString:last.date] : @"未填写");
+}
+
+- (void)reloadAuthorizationsOfAccount:(Account *)account {
+    self.authRows = account.authorizations;
+    [self.authTable reloadData];
+    NSUInteger active = account.activeAuthorizations.count, revoked = account.authorizations.count - active;
+    self.authSummary.stringValue = account.authorizations.count
+        ? [NSString stringWithFormat:@"已授权 %lu 个应用%@。双击可改名或加备注，右键可标记为已撤销。", (unsigned long)active,
+            revoked ? [NSString stringWithFormat:@"，%lu 个已撤销", (unsigned long)revoked] : @""]
+        : @"还没有授权记录。用“打开授权链接…”完成授权后会自动记下；在别处授权过的可以手动添加。";
+    self.sectionSummaries[@"auth"].stringValue = active ? [[account.activeAuthorizations valueForKey:@"appName"]
+        componentsJoinedByString:@"、"] : (account.authURL.length ? @"已保存链接" : @"");
+}
+
+/// Expands the sections holding what is missing and scrolls to the first.
+- (void)revealMissingFields:(id)sender {
+    NSDictionary *sections = @{@"邮箱": @"profile", @"订阅级别": @"subscription", @"续费 / 到期日期": @"subscription",
+        @"月费": @"subscription", @"币种": @"subscription"};
+    NSMutableOrderedSet *targets = [NSMutableOrderedSet orderedSet];
+    for (NSString *field in self.missingFields) [targets addObject:sections[field] ?: @"payment"];
+    NSMutableSet *collapsed = [self.collapsedSections mutableCopy];
+    [collapsed minusSet:targets.set];
+    [NSUserDefaults.standardUserDefaults setObject:collapsed.allObjects forKey:CollapsedDefaultsKey(self.coordinator.mode)];
+    [self applyMode];
+    [self.view layoutSubtreeIfNeeded];
+    NSView *first = self.sectionViews[targets.firstObject];
+    if (first) [first scrollRectToVisible:first.bounds];
 }
 
 - (void)commitPendingEdits {
@@ -856,9 +940,12 @@ static NSString *SourceName(NSString *source, id value) {
 
 #pragma mark - Payment records
 
-- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return (NSInteger)self.paymentRows.count; }
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    return (NSInteger)(tableView == self.authTable ? self.authRows.count : self.paymentRows.count);
+}
 
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    if (tableView == self.authTable) return [self authorizationCellForColumn:tableColumn.identifier row:row];
     NSTableCellView *cell = [tableView makeViewWithIdentifier:@"PaymentCell" owner:self];
     if (!cell) {
         cell = [NSTableCellView new];
@@ -895,7 +982,50 @@ static NSString *SourceName(NSString *source, id value) {
     return cell;
 }
 
+- (NSTableCellView *)authorizationCellForColumn:(NSString *)column row:(NSInteger)row {
+    NSTableCellView *cell = [self.authTable makeViewWithIdentifier:@"AuthorizationCell" owner:self];
+    if (!cell) {
+        cell = [NSTableCellView new];
+        cell.identifier = @"AuthorizationCell";
+        NSTextField *label = DeskLabel(@"", 11.5, NSFontWeightRegular);
+        label.lineBreakMode = NSLineBreakByTruncatingTail;
+        [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [cell addSubview:label];
+        cell.textField = label;
+        [NSLayoutConstraint activateConstraints:@[
+            [label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:2],
+            [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-2],
+            [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]
+        ]];
+    }
+    AccountAuthorization *item = self.authRows[(NSUInteger)row];
+    cell.textField.textColor = item.revoked ? NSColor.tertiaryLabelColor : NSColor.labelColor;
+    if ([column isEqualToString:@"app"]) {
+        cell.textField.stringValue = item.appName.length ? item.appName : @"未命名应用";
+    } else if ([column isEqualToString:@"last"]) {
+        NSDateFormatter *formatter = [NSDateFormatter new];
+        formatter.dateFormat = @"yyyy-MM-dd";
+        cell.textField.stringValue = [formatter stringFromDate:item.lastAuthorizedAt];
+    } else {
+        cell.textField.stringValue = item.revoked ? @"已撤销" : @"已授权";
+        cell.textField.textColor = item.revoked ? NSColor.secondaryLabelColor : NSColor.systemGreenColor;
+    }
+    NSMutableArray *tip = [NSMutableArray arrayWithObject:[NSString stringWithFormat:@"首次 %@ · 最近 %@ · 共 %ld 次",
+        DeskDateTimeString(item.firstAuthorizedAt), DeskDateTimeString(item.lastAuthorizedAt), (long)item.count]];
+    if (item.redirect.length) [tip addObject:[@"回调：" stringByAppendingString:item.redirect]];
+    if (item.clientID.length) [tip addObject:[@"client_id：" stringByAppendingString:item.clientID]];
+    if (item.scope.length) [tip addObject:[@"权限：" stringByAppendingString:item.scope]];
+    if (item.note.length) [tip addObject:[@"备注：" stringByAppendingString:item.note]];
+    if (item.revoked) [tip addObject:[@"撤销于 " stringByAppendingString:DeskDateTimeString(item.revokedAt)]];
+    cell.toolTip = [tip componentsJoinedByString:@"\n"];
+    return cell;
+}
+
 - (void)menuNeedsUpdate:(NSMenu *)menu {
+    if (menu == self.authTable.menu) {
+        [self updateAuthorizationMenu:menu];
+        return;
+    }
     [menu removeAllItems];
     NSInteger row = self.paymentsTable.clickedRow;
     if (row < 0 || row >= (NSInteger)self.paymentRows.count) {
@@ -908,6 +1038,148 @@ static NSString *SourceName(NSString *source, id value) {
         item.target = self;
         item.representedObject = self.paymentRows[(NSUInteger)row];
     }
+}
+
+#pragma mark - Authorization records
+
+- (void)updateAuthorizationMenu:(NSMenu *)menu {
+    [menu removeAllItems];
+    NSInteger row = self.authTable.clickedRow;
+    if (row < 0 || row >= (NSInteger)self.authRows.count) {
+        [menu addItemWithTitle:@"手动添加…" action:@selector(addAuthorization:) keyEquivalent:@""].target = self;
+        return;
+    }
+    AccountAuthorization *item = self.authRows[(NSUInteger)row];
+    NSMenuItem *edit = [menu addItemWithTitle:@"编辑…" action:@selector(editAuthorizationFromMenu:) keyEquivalent:@""];
+    NSMenuItem *toggle = [menu addItemWithTitle:item.revoked ? @"恢复为已授权" : @"标记为已撤销" action:@selector(toggleRevokedFromMenu:)
+        keyEquivalent:@""];
+    NSMenuItem *copy = item.redirect.length
+        ? [menu addItemWithTitle:@"复制回调地址" action:@selector(copyRedirectFromMenu:) keyEquivalent:@""] : nil;
+    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *remove = [menu addItemWithTitle:@"删除记录" action:@selector(deleteAuthorizationFromMenu:) keyEquivalent:@""];
+    for (NSMenuItem *menuItem in @[edit, toggle, remove]) {
+        menuItem.target = self;
+        menuItem.representedObject = item;
+    }
+    copy.target = self;
+    copy.representedObject = item;
+}
+
+- (void)editClickedAuthorization:(id)sender {
+    NSInteger row = self.authTable.clickedRow;
+    if (row >= 0 && row < (NSInteger)self.authRows.count) [self presentEditorForAuthorization:self.authRows[(NSUInteger)row] isNew:NO];
+}
+
+- (void)editAuthorizationFromMenu:(NSMenuItem *)sender { [self presentEditorForAuthorization:sender.representedObject isNew:NO]; }
+
+- (void)toggleRevokedFromMenu:(NSMenuItem *)sender {
+    AccountAuthorization *item = sender.representedObject;
+    item.revokedAt = item.revoked ? nil : NSDate.date;
+    [self save];
+}
+
+- (void)copyRedirectFromMenu:(NSMenuItem *)sender {
+    AccountAuthorization *item = sender.representedObject;
+    [NSPasteboard.generalPasteboard clearContents];
+    [NSPasteboard.generalPasteboard setString:item.redirect forType:NSPasteboardTypeString];
+}
+
+- (void)deleteAuthorizationFromMenu:(NSMenuItem *)sender {
+    AccountAuthorization *item = sender.representedObject;
+    Account *account = [self account];
+    if (!account || !item) return;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = [NSString stringWithFormat:@"删除“%@”的授权记录？", item.appName.length ? item.appName : @"未命名应用"];
+    alert.informativeText = @"只删除本机的记录，不会撤销第三方应用已获得的授权；需要撤销时请在对方应用或 ChatGPT 设置中操作。";
+    [alert addButtonWithTitle:@"删除"].hasDestructiveAction = YES;
+    [alert addButtonWithTitle:@"取消"];
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        NSMutableArray *authorizations = [account.authorizations mutableCopy];
+        [authorizations removeObject:item];
+        account.authorizations = authorizations;
+        [weakSelf save];
+    }];
+}
+
+- (void)addAuthorization:(id)sender {
+    [self commitPendingEdits];
+    if (![self account]) return;
+    [self presentEditorForAuthorization:[AccountAuthorization new] isNew:YES];
+}
+
+- (void)presentEditorForAuthorization:(AccountAuthorization *)item isNew:(BOOL)isNew {
+    Account *account = [self account];
+    if (!account) return;
+    NSTextField *name = [NSTextField new];
+    name.stringValue = item.appName;
+    name.placeholderString = @"应用或网站名称";
+    [name.widthAnchor constraintEqualToConstant:240].active = YES;
+    NSDatePicker *date = [NSDatePicker new];
+    date.datePickerStyle = NSDatePickerStyleTextFieldAndStepper;
+    date.datePickerElements = NSDatePickerElementFlagYearMonthDay;
+    date.dateValue = item.lastAuthorizedAt ?: NSDate.date;
+    NSTextField *note = [NSTextField new];
+    note.stringValue = item.note;
+    note.placeholderString = @"可选，例如用途、授权的权限";
+    [note.widthAnchor constraintEqualToConstant:240].active = YES;
+    NSButton *revoked = [NSButton checkboxWithTitle:@"已撤销" target:nil action:nil];
+    revoked.state = item.revoked ? NSControlStateValueOn : NSControlStateValueOff;
+    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[
+        @[DeskLabel(@"名称", 13, NSFontWeightRegular), name],
+        @[DeskLabel(@"授权日期", 13, NSFontWeightRegular), date],
+        @[DeskLabel(@"备注", 13, NSFontWeightRegular), note],
+        @[[NSGridCell emptyContentView], revoked]]];
+    if (item.redirect.length) {
+        NSTextField *redirect = DeskLabel(item.redirect, 11, NSFontWeightRegular);
+        redirect.textColor = NSColor.secondaryLabelColor;
+        redirect.selectable = YES;
+        redirect.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        [redirect.widthAnchor constraintLessThanOrEqualToConstant:240].active = YES;
+        [rows insertObject:@[DeskLabel(@"回调地址", 13, NSFontWeightRegular), redirect] atIndex:1];
+    }
+    NSGridView *grid = [NSGridView gridViewWithViews:rows];
+    grid.rowSpacing = 8;
+    grid.columnSpacing = 10;
+    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
+    grid.frame = NSMakeRect(0, 0, 330, grid.fittingSize.height);
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = isNew ? [NSString stringWithFormat:@"为“%@”添加授权记录", account.name] : @"编辑授权记录";
+    alert.informativeText = isNew ? @"记录在本应用之外用此账号授权过的第三方应用或网站。" : @"只修改本机的记录。";
+    alert.accessoryView = grid;
+    [alert addButtonWithTitle:isNew ? @"添加" : @"保存"];
+    [alert addButtonWithTitle:@"取消"];
+    [alert layout];
+    alert.window.initialFirstResponder = name;
+    NSString *identifier = account.identifier;
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
+        AccountInspectorController *strongSelf = weakSelf;
+        Account *current = [strongSelf.coordinator.store accountWithID:identifier];
+        NSString *title = [name.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!current || response != NSAlertFirstButtonReturn) return;
+        if (!title.length) { NSBeep(); return; }
+        item.appName = title;
+        item.note = note.stringValue;
+        BOOL wasRevoked = item.revoked;
+        if (revoked.state == NSControlStateValueOn && !wasRevoked) item.revokedAt = NSDate.date;
+        if (revoked.state == NSControlStateValueOff) item.revokedAt = nil;
+        if (isNew) {
+            item.source = @"manual";
+            item.firstAuthorizedAt = date.dateValue;
+            item.lastAuthorizedAt = date.dateValue;
+            current.authorizations = [current.authorizations arrayByAddingObject:item];
+        } else {
+            // A manual record's date is what the user says; recorded ones keep their timestamps unless changed.
+            if (![AccountDayString(date.dateValue) isEqualToString:AccountDayString(item.lastAuthorizedAt)]) {
+                item.lastAuthorizedAt = date.dateValue;
+                if ([item.firstAuthorizedAt compare:date.dateValue] == NSOrderedDescending) item.firstAuthorizedAt = date.dateValue;
+            }
+            current.authorizations = current.authorizations;
+        }
+        [strongSelf save];
+    }];
 }
 
 - (void)addPayment:(id)sender {

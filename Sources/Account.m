@@ -251,6 +251,75 @@ NSDate *AccountDateFromDayString(NSString *day) {
 }
 @end
 
+#pragma mark - Authorizations
+
+@implementation AccountAuthorization
+
+- (instancetype)init {
+    if ((self = [super init])) {
+        _identifier = NSUUID.UUID.UUIDString;
+        _appName = @"";
+        _clientID = @"";
+        _redirect = @"";
+        _scope = @"";
+        _note = @"";
+        _source = @"manual";
+        _firstAuthorizedAt = NSDate.date;
+        _lastAuthorizedAt = _firstAuthorizedAt;
+        _count = 1;
+    }
+    return self;
+}
+
+- (instancetype)initWithDictionary:(NSDictionary *)dictionary {
+    if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
+    NSDate *last = TimestampOrNil(dictionary[@"lastAuthorizedAt"]);
+    if (!last || !(StringOrNil(dictionary[@"appName"]) || StringOrNil(dictionary[@"clientID"]) || StringOrNil(dictionary[@"redirect"])))
+        return nil;
+    if ((self = [self init])) {
+        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:StringOrNil(dictionary[@"id"]) ?: @""];
+        if (uuid) _identifier = uuid.UUIDString;
+        self.appName = StringOrNil(dictionary[@"appName"]);
+        self.clientID = StringOrNil(dictionary[@"clientID"]);
+        self.redirect = StringOrNil(dictionary[@"redirect"]);
+        self.scope = StringOrNil(dictionary[@"scope"]);
+        self.note = StringOrNil(dictionary[@"note"]);
+        self.source = StringOrNil(dictionary[@"source"]);
+        _lastAuthorizedAt = last;
+        _firstAuthorizedAt = TimestampOrNil(dictionary[@"firstAuthorizedAt"]) ?: last;
+        _count = MAX(1, [NumberOrNil(dictionary[@"count"]) integerValue]);
+        _revokedAt = TimestampOrNil(dictionary[@"revokedAt"]);
+    }
+    return self;
+}
+
+- (void)setAppName:(NSString *)appName { _appName = [Trimmed(appName) copy]; }
+- (void)setClientID:(NSString *)clientID { _clientID = [Trimmed(clientID) copy]; }
+- (void)setRedirect:(NSString *)redirect { _redirect = [Trimmed(redirect) copy]; }
+- (void)setScope:(NSString *)scope { _scope = [Trimmed(scope) copy]; }
+- (void)setNote:(NSString *)note { _note = [Trimmed(note) copy]; }
+- (void)setSource:(NSString *)source { _source = [Trimmed(source).length ? Trimmed(source) : @"manual" copy]; }
+- (BOOL)isRevoked { return self.revokedAt != nil; }
+
+- (NSDictionary *)dictionaryRepresentation {
+    NSMutableDictionary *dictionary = [@{@"id": self.identifier, @"source": self.source, @"count": @(self.count),
+        @"firstAuthorizedAt": [TimestampFormatter() stringFromDate:self.firstAuthorizedAt],
+        @"lastAuthorizedAt": [TimestampFormatter() stringFromDate:self.lastAuthorizedAt]} mutableCopy];
+    if (self.appName.length) dictionary[@"appName"] = self.appName;
+    if (self.clientID.length) dictionary[@"clientID"] = self.clientID;
+    if (self.redirect.length) dictionary[@"redirect"] = self.redirect;
+    if (self.scope.length) dictionary[@"scope"] = self.scope;
+    if (self.note.length) dictionary[@"note"] = self.note;
+    if (self.revokedAt) dictionary[@"revokedAt"] = [TimestampFormatter() stringFromDate:self.revokedAt];
+    return dictionary;
+}
+
+- (BOOL)isSameAppAsClientID:(NSString *)clientID redirect:(NSString *)redirect {
+    if (clientID.length && self.clientID.length) return [clientID isEqualToString:self.clientID];
+    return redirect.length && [redirect isEqualToString:self.redirect];
+}
+@end
+
 #pragma mark - Payments
 
 @implementation AccountPayment
@@ -318,7 +387,7 @@ NSDate *AccountDateFromDayString(NSString *day) {
 
 static NSArray<NSString *> *KnownKeys(void) {
     return @[@"id", @"name", @"email", @"plan", @"planSource", @"expiresAt", @"expirySource", @"autoRenew",
-             @"monthlyPrice", @"currency", @"group", @"tags", @"notes", @"authURL", @"proxy", @"supplier", @"paymentMethod", @"cardLast4", @"payments", @"createdAt", @"lastUsedAt",
+             @"monthlyPrice", @"currency", @"group", @"tags", @"notes", @"authURL", @"proxy", @"supplier", @"paymentMethod", @"cardLast4", @"payments", @"authorizations", @"createdAt", @"lastUsedAt",
              @"signedIn", @"usage"];
 }
 
@@ -365,6 +434,13 @@ static NSArray<NSString *> *KnownKeys(void) {
                 if (payment) [payments addObject:payment];
             }
         self.payments = payments;
+        NSMutableArray *authorizations = [NSMutableArray array];
+        if ([dictionary[@"authorizations"] isKindOfClass:NSArray.class])
+            for (id item in dictionary[@"authorizations"]) {
+                AccountAuthorization *authorization = [[AccountAuthorization alloc] initWithDictionary:item];
+                if (authorization) [authorizations addObject:authorization];
+            }
+        self.authorizations = authorizations;
         _createdAt = TimestampOrNil(dictionary[@"createdAt"]);
         _lastUsedAt = TimestampOrNil(dictionary[@"lastUsedAt"]);
         id signedIn = dictionary[@"signedIn"];
@@ -408,6 +484,44 @@ static NSArray<NSString *> *KnownKeys(void) {
 
 - (AccountPayment *)lastPayment { return self.payments.firstObject; }
 
+- (void)setAuthorizations:(NSArray<AccountAuthorization *> *)authorizations {
+    _authorizations = [authorizations ?: @[] sortedArrayWithOptions:NSSortStable
+        usingComparator:^NSComparisonResult(AccountAuthorization *a, AccountAuthorization *b) {
+            return [b.lastAuthorizedAt compare:a.lastAuthorizedAt];
+        }];
+}
+
+- (NSArray<AccountAuthorization *> *)activeAuthorizations {
+    return [self.authorizations filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(AccountAuthorization *item, id bindings) {
+        return !item.revoked;
+    }]];
+}
+
+- (AccountAuthorization *)recordAuthorizationWithClientID:(NSString *)clientID redirect:(NSString *)redirect scope:(NSString *)scope
+    appName:(NSString *)appName at:(NSDate *)date {
+    for (AccountAuthorization *existing in self.authorizations) {
+        if (![existing isSameAppAsClientID:clientID redirect:redirect]) continue;
+        existing.lastAuthorizedAt = date;
+        existing.count += 1;
+        existing.revokedAt = nil;
+        if (scope.length) existing.scope = scope;
+        if (redirect.length) existing.redirect = redirect;
+        if (!existing.appName.length) existing.appName = appName;
+        self.authorizations = self.authorizations;
+        return existing;
+    }
+    AccountAuthorization *authorization = [AccountAuthorization new];
+    authorization.appName = appName;
+    authorization.clientID = clientID;
+    authorization.redirect = redirect;
+    authorization.scope = scope;
+    authorization.source = @"app";
+    authorization.firstAuthorizedAt = date;
+    authorization.lastAuthorizedAt = date;
+    self.authorizations = [self.authorizations arrayByAddingObject:authorization];
+    return authorization;
+}
+
 - (NSString *)paymentSummary {
     NSMutableArray *parts = [NSMutableArray array];
     if (self.supplier.length) [parts addObject:self.supplier];
@@ -443,6 +557,7 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (self.paymentMethod.length) dictionary[@"paymentMethod"] = self.paymentMethod;
     if (self.cardLast4.length) dictionary[@"cardLast4"] = self.cardLast4;
     if (self.payments.count) dictionary[@"payments"] = [self.payments valueForKey:@"dictionaryRepresentation"];
+    if (self.authorizations.count) dictionary[@"authorizations"] = [self.authorizations valueForKey:@"dictionaryRepresentation"];
     if (self.createdAt) dictionary[@"createdAt"] = [TimestampFormatter() stringFromDate:self.createdAt];
     if (self.lastUsedAt) dictionary[@"lastUsedAt"] = [TimestampFormatter() stringFromDate:self.lastUsedAt];
     if (self.signedIn) dictionary[@"signedIn"] = self.signedIn;
@@ -479,6 +594,17 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (other.paymentMethod.length) self.paymentMethod = other.paymentMethod;
     if (other.cardLast4.length) self.cardLast4 = other.cardLast4;
     [self addPayments:other.payments];
+    NSMutableArray<AccountAuthorization *> *authorizations = [self.authorizations mutableCopy];
+    for (AccountAuthorization *incoming in other.authorizations) {
+        AccountAuthorization *match = nil;
+        for (AccountAuthorization *existing in authorizations)
+            if ([existing.identifier isEqualToString:incoming.identifier] ||
+                [existing isSameAppAsClientID:incoming.clientID redirect:incoming.redirect]) match = existing;
+        if (!match) [authorizations addObject:incoming];
+        else if ([incoming.lastAuthorizedAt compare:match.lastAuthorizedAt] == NSOrderedDescending)
+            [authorizations replaceObjectAtIndex:[authorizations indexOfObject:match] withObject:incoming];
+    }
+    self.authorizations = authorizations;
     if (other.createdAt && (!self.createdAt || [other.createdAt compare:self.createdAt] == NSOrderedAscending))
         self.createdAt = other.createdAt;
 }
@@ -557,8 +683,8 @@ static NSArray<NSString *> *KnownKeys(void) {
 - (BOOL)matchesSearch:(NSString *)query {
     NSString *needle = Trimmed(query);
     if (!needle.length) return YES;
-    NSArray *fields = [@[self.name, self.email, self.group, self.notes, self.plan ?: @"", self.supplier, self.paymentMethod,
-        self.cardLast4] arrayByAddingObjectsFromArray:self.tags];
+    NSArray *fields = [[@[self.name, self.email, self.group, self.notes, self.plan ?: @"", self.supplier, self.paymentMethod,
+        self.cardLast4] arrayByAddingObjectsFromArray:self.tags] arrayByAddingObjectsFromArray:[self.authorizations valueForKey:@"appName"]];
     for (NSString *field in fields)
         if ([field localizedCaseInsensitiveContainsString:needle]) return YES;
     return NO;
@@ -709,6 +835,14 @@ static NSArray *AccountItemsFromJSON(NSData *data, NSError **error) {
 
 - (NSArray<NSString *> *)suppliers { return [self orderedValues:AccountSuppliers() key:@"supplier"]; }
 - (NSArray<NSString *> *)paymentMethods { return [self orderedValues:AccountPaymentMethods() key:@"paymentMethod"]; }
+
+- (NSArray<NSString *> *)authorizedApps {
+    NSMutableSet *names = [NSMutableSet set];
+    for (Account *account in _accounts)
+        for (AccountAuthorization *authorization in account.activeAuthorizations)
+            if (authorization.appName.length) [names addObject:authorization.appName];
+    return [names.allObjects sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+}
 
 - (double)monthlySpendInCNYWithRates:(NSDictionary<NSString *, NSNumber *> *)rates missingCurrencies:(NSArray<NSString *> **)missing {
     __block double total = 0;

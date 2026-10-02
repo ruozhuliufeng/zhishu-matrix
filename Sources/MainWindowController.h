@@ -41,6 +41,7 @@ extern NSString *const ReleaseIdlePagesMinutesDefaultsKey;
 - (IBAction)addTagsToSelected:(nullable id)sender;
 - (IBAction)readBillingForSelected:(nullable id)sender;
 - (IBAction)openBillingPageForSelected:(nullable id)sender;
+- (IBAction)setPaymentInfoForSelected:(nullable id)sender;
 @end
 
 NS_ASSUME_NONNULL_END

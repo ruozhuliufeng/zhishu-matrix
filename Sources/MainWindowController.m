@@ -1221,6 +1221,14 @@ static BOOL IsChatGPTPage(NSURL *url) {
     AuthorizationWindowController *controller = [[AuthorizationWindowController alloc] initWithAccount:account
         URL:url dataStore:dataStore captureCallback:captureCallback];
     __weak typeof(self) weakSelf = self;
+    controller.authorized = ^(AuthorizationWindowController *finished, NSDictionary<NSString *, NSString *> *details) {
+        MainWindowController *strongSelf = weakSelf;
+        Account *current = [strongSelf.store accountWithID:finished.accountID];
+        if (!current) return;
+        [current recordAuthorizationWithClientID:details[@"clientID"] redirect:details[@"redirect"] scope:details[@"scope"]
+            appName:details[@"appName"] at:NSDate.date];
+        [strongSelf.store commit];
+    };
     controller.closed = ^(AuthorizationWindowController *closed) {
         // Let the window finish closing before the controller that owns it is released.
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1424,6 +1432,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
     }
     supplierItem.submenu = supplierMenu;
     [menu addItem:supplierItem];
+    [menu addItem:[self menuItem:accounts.count == 1 ? @"设置付款信息…" : @"批量设置付款信息…" symbol:@"creditcard.and.123"
+        action:@selector(paymentInfoFromMenu:) object:ids]];
     [menu addItem:[self menuItem:accounts.count == 1 ? @"导出资料…" : @"导出所选资料…" symbol:@"square.and.arrow.up"
         action:@selector(exportFromMenu:) object:ids]];
     [menu addItem:[NSMenuItem separatorItem]];
@@ -1468,6 +1478,59 @@ static BOOL IsChatGPTPage(NSURL *url) {
     if (!account.email.length) return;
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:account.email forType:NSPasteboardTypeString];
+}
+
+- (void)paymentInfoFromMenu:(NSMenuItem *)sender { [self promptPaymentInfoForAccountIDs:sender.representedObject]; }
+- (void)setPaymentInfoForSelected:(id)sender { [self promptPaymentInfoForAccountIDs:[self targetAccountIDs]]; }
+
+- (void)promptPaymentInfoForAccountIDs:(NSArray<NSString *> *)identifiers {
+    NSArray<Account *> *accounts = [self.store accountsWithIDs:identifiers];
+    if (!accounts.count) return;
+    NSString *(^shared)(NSString *) = ^NSString *(NSString *key) {
+        NSSet *values = [NSSet setWithArray:[accounts valueForKey:key]];
+        return values.count == 1 ? values.anyObject : @"";
+    };
+    NSComboBox *supplier = [NSComboBox new];
+    [supplier addItemsWithObjectValues:self.store.suppliers];
+    supplier.stringValue = shared(@"supplier");
+    NSComboBox *method = [NSComboBox new];
+    [method addItemsWithObjectValues:self.store.paymentMethods];
+    method.stringValue = shared(@"paymentMethod");
+    NSTextField *card = [NSTextField new];
+    card.stringValue = shared(@"cardLast4");
+    card.placeholderString = @"卡号后 4 位";
+    for (NSControl *control in @[supplier, method, card]) [control.widthAnchor constraintEqualToConstant:220].active = YES;
+    if (accounts.count > 1)
+        for (NSTextField *field in @[supplier, method, card])
+            if (!field.stringValue.length) field.placeholderString = @"多个值，留空保持不变";
+    NSGridView *grid = [NSGridView gridViewWithViews:@[
+        @[DeskLabel(@"供应商", 13, NSFontWeightRegular), supplier],
+        @[DeskLabel(@"付款方式", 13, NSFontWeightRegular), method],
+        @[DeskLabel(@"卡尾号", 13, NSFontWeightRegular), card]]];
+    grid.rowSpacing = 8;
+    grid.columnSpacing = 10;
+    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
+    grid.frame = NSMakeRect(0, 0, 310, grid.fittingSize.height);
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = accounts.count == 1 ? [NSString stringWithFormat:@"设置“%@”的付款信息", accounts.firstObject.name]
+        : [NSString stringWithFormat:@"设置 %lu 个账号的付款信息", (unsigned long)accounts.count];
+    alert.informativeText = accounts.count == 1 ? @"卡号只保存后 4 位。" : @"填写的项目会应用到所有所选账号，留空的项目保持各账号原值。卡号只保存后 4 位。";
+    alert.accessoryView = grid;
+    [alert addButtonWithTitle:@"保存"];
+    [alert addButtonWithTitle:@"取消"];
+    [alert layout];
+    alert.window.initialFirstResponder = supplier;
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        NSString *last4 = AccountCardLast4(card.stringValue);
+        for (Account *account in accounts) {
+            if (supplier.stringValue.length || accounts.count == 1) account.supplier = supplier.stringValue;
+            if (method.stringValue.length || accounts.count == 1) account.paymentMethod = method.stringValue;
+            if (last4.length || (accounts.count == 1 && !card.stringValue.length)) account.cardLast4 = last4;
+        }
+        [weakSelf.store commit];
+    }];
 }
 
 - (void)assignSupplierFromMenu:(NSMenuItem *)sender {
@@ -1537,7 +1600,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
     if (action == @selector(renameSelectedAccount:) || action == @selector(openAuthorizationLink:) ||
         action == @selector(openBillingPageForSelected:))
         return [self targetAccountIDs].count == 1;
-    if (action == @selector(readBillingForSelected:)) return [self targetAccountIDs].count > 0;
+    if (action == @selector(readBillingForSelected:) || action == @selector(setPaymentInfoForSelected:))
+        return [self targetAccountIDs].count > 0;
     if (action == @selector(readAllBilling:)) return self.store.accounts.count > 0 && !self.billingReader.isReading;
     if (action == @selector(exportPaymentsCSV:)) {
         for (Account *account in self.store.accounts) if (account.payments.count) return YES;

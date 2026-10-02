@@ -34,9 +34,35 @@ double const AccountLowQuotaPercent = 20;
     if (account.refreshError.length)
         return [[self alloc] initWithKind:AccountStatusRefreshFailed tone:AccountStatusToneWarning title:@"读取失败"
             symbol:@"exclamationmark.triangle.fill"];
+    NSArray<NSString *> *missing = AccountMissingFields(account, now);
+    if (missing.count)
+        return [[self alloc] initWithKind:AccountStatusIncomplete tone:AccountStatusToneNeutral
+            title:[NSString stringWithFormat:@"资料缺 %lu 项", (unsigned long)missing.count] symbol:@"list.bullet.clipboard"];
     return [[self alloc] initWithKind:AccountStatusNormal tone:AccountStatusToneNeutral title:@"正常" symbol:@"checkmark.circle"];
 }
 @end
+
+NSArray<NSString *> *AccountMissingFields(Account *account, NSDate *now) {
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    if (!account.email.length) [missing addObject:@"邮箱"];
+    if (!account.plan) [missing addObject:@"订阅级别"];
+    if (!account.isPaid) return missing;
+    if (!account.expiresAt) [missing addObject:@"续费 / 到期日期"];
+    if (!account.monthlyPrice) [missing addObject:@"月费"];
+    else if (!account.currency.length) [missing addObject:@"币种"];
+    if (!account.supplier.length) [missing addObject:@"供应商"];
+    if (!account.paymentMethod.length) [missing addObject:@"付款方式"];
+    else if (!account.cardLast4.length && [account.paymentMethod rangeOfString:@"(信用卡|借记卡|银行卡|储蓄卡|Visa|Master|Card)"
+        options:NSRegularExpressionSearch | NSCaseInsensitiveSearch].location != NSNotFound) [missing addObject:@"卡尾号"];
+    if (!account.payments.count) {
+        [missing addObject:@"付款记录"];
+    } else if (account.autoRenew.boolValue) {
+        // A monthly renewal should leave a payment at least every month or so.
+        NSDate *last = AccountDateFromDayString(account.lastPayment.date);
+        if (last && [now timeIntervalSinceDate:last] > 35 * 86400) [missing addObject:@"近 35 天未记付款"];
+    }
+    return missing;
+}
 
 NSDictionary<NSString *, NSArray<Account *> *> *AccountDuplicateEmails(NSArray<Account *> *accounts) {
     NSMutableDictionary<NSString *, NSMutableArray<Account *> *> *byEmail = [NSMutableDictionary dictionary];

@@ -7,7 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 typedef NS_ENUM(NSInteger, AuthorizationState) {
     AuthorizationStateBrowsing = 0,
-    /// The flow came back to a callback address on this Mac and it answered.
+    /// The flow came back to the callback address (on this Mac, or the app's website) and it answered.
     AuthorizationStateCompleted,
     /// The callback address was captured and, as requested, not opened on this Mac.
     AuthorizationStateCaptured,
@@ -23,6 +23,11 @@ typedef NS_ENUM(NSInteger, AuthorizationState) {
 /// The localhost callback (with the authorization code) the flow redirected to, once known.
 @property (nonatomic, readonly, nullable) NSURL *callbackURL;
 @property (nonatomic, copy, nullable) void (^closed)(AuthorizationWindowController *controller);
+/// client_id, redirect address and scope of the authorization request, once a link carrying them was seen.
+@property (nonatomic, readonly, nullable) NSDictionary<NSString *, NSString *> *request;
+/// Called once when the authorization went through (completed, handed off or captured), with
+/// {@"clientID"?, @"redirect"?, @"scope"?, @"appName"}.
+@property (nonatomic, copy, nullable) void (^authorized)(AuthorizationWindowController *controller, NSDictionary<NSString *, NSString *> *details);
 
 /// With `captureCallback`, the localhost callback is recorded for copying but not opened on this Mac.
 - (instancetype)initWithAccount:(Account *)account URL:(NSURL *)url dataStore:(nullable WKWebsiteDataStore *)dataStore

@@ -18,6 +18,9 @@ static NSString *const CopyTitle = @"复制回调地址";
 @property (nonatomic, strong) NSURL *initialURL;
 @property (nonatomic, strong) NSMutableSet<NSString *> *origins;
 @property (nonatomic, copy, nullable) NSString *handoffMessage;
+@property (nonatomic, readwrite, nullable) NSDictionary<NSString *, NSString *> *request;
+@property (nonatomic, copy, nullable) NSString *handoffAppName;
+@property (nonatomic) BOOL reported;
 @property (nonatomic, strong) DeskFillView *banner;
 @property (nonatomic, strong) NSImageView *statusIcon;
 @property (nonatomic, strong) NSTextField *statusLabel;
@@ -39,6 +42,7 @@ static NSString *const CopyTitle = @"复制回调地址";
         _initialURL = url;
         _capturesCallback = captureCallback;
         _origins = [NSMutableSet setWithObject:AuthorizationOrigin(url)];
+        _request = AuthorizationRequestFromURL(url);
         window.title = [NSString stringWithFormat:@"授权登录 · %@", account.name];
         window.minSize = NSMakeSize(560, 460);
         window.releasedWhenClosed = NO;
@@ -151,7 +155,45 @@ static NSString *const CopyTitle = @"复制回调地址";
     self.callbackURL = url;
 }
 
+- (void)setState:(AuthorizationState)state {
+    _state = state;
+    if (state == AuthorizationStateCompleted || state == AuthorizationStateHandedOff || state == AuthorizationStateCaptured)
+        [self reportAuthorized];
+}
+
+/// The app's own web page as the redirect address (not this Mac): the flow ends there.
+- (BOOL)isWebCallbackURL:(NSURL *)url {
+    NSString *redirect = self.request[@"redirect"];
+    NSURL *target = redirect.length ? [NSURL URLWithString:redirect] : nil;
+    NSString *scheme = target.scheme.lowercaseString;
+    if (!([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) || AuthorizationIsLoopbackURL(target)) return NO;
+    return AuthorizationURLMatchesRedirect(url, redirect);
+}
+
+- (void)reportAuthorized {
+    if (self.reported || !self.authorized) return;
+    NSURL *callback = self.callbackURL ?: self.session.webView.URL;
+    // A callback carrying error=access_denied means the user declined.
+    if (self.state != AuthorizationStateHandedOff && !AuthorizationCallbackSucceeded(callback)) return;
+    self.reported = YES;
+    NSMutableDictionary *details = [NSMutableDictionary dictionaryWithDictionary:self.request ?: @{}];
+    NSString *redirect = details[@"redirect"];
+    if (!redirect.length && callback) {
+        NSURLComponents *components = [NSURLComponents componentsWithURL:callback resolvingAgainstBaseURL:NO];
+        components.query = nil;
+        components.fragment = nil;
+        redirect = components.string;
+        if (redirect.length) details[@"redirect"] = redirect;
+    }
+    details[@"appName"] = self.handoffAppName ?: AuthorizationAppName(redirect);
+    self.authorized(self, details);
+}
+
 - (BOOL)allowsNavigationTo:(NSURL *)url {
+    if (!self.request[@"redirect"]) {
+        NSDictionary *request = AuthorizationRequestFromURL(url);
+        if (request[@"redirect"]) self.request = request;
+    }
     [self noteCallbackURL:url];
     if (self.capturesCallback && self.callbackURL && [url isEqual:self.callbackURL]) {
         self.state = AuthorizationStateCaptured;
@@ -170,7 +212,8 @@ static NSString *const CopyTitle = @"复制回调地址";
     if ([failed isKindOfClass:NSURL.class]) [self noteCallbackURL:failed];
     if (url.host.length) {
         [self noteCallbackURL:url];
-        if (!webView.loading && !self.session.lastError && self.state == AuthorizationStateBrowsing && [self isCallbackURL:url])
+        if (!webView.loading && !self.session.lastError && self.state == AuthorizationStateBrowsing &&
+            ([self isCallbackURL:url] || ([self isWebCallbackURL:url] && AuthorizationCallbackSucceeded(url))))
             self.state = AuthorizationStateCompleted;
         [self.origins addObject:AuthorizationOrigin(url)];
     }
@@ -182,6 +225,15 @@ static NSString *const CopyTitle = @"复制回调地址";
         NSURL *app = [NSWorkspace.sharedWorkspace URLForApplicationToOpenURL:url];
         NSString *name = app ? [NSFileManager.defaultManager displayNameAtPath:app.path] : url.scheme;
         self.handoffMessage = [NSString stringWithFormat:@"授权结果已交给“%@”，对方会自动完成登录，可以关闭此窗口。", name];
+        self.handoffAppName = app ? name : nil;
+        if (!self.request[@"redirect"]) {
+            NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+            components.query = nil;
+            components.fragment = nil;
+            NSMutableDictionary *request = [self.request mutableCopy] ?: [NSMutableDictionary dictionary];
+            if (components.string) request[@"redirect"] = components.string;
+            self.request = request;
+        }
         self.state = AuthorizationStateHandedOff;
     } else {
         self.handoffMessage = [NSString stringWithFormat:@"没有应用可以处理 %@:// 回调，请确认对应的应用已安装。", url.scheme];

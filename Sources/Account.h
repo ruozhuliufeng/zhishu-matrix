@@ -45,6 +45,28 @@ NSDictionary<NSString *, NSNumber *> *AccountExchangeRates(void);
 NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nullable currency,
     NSDictionary<NSString *, NSNumber *> *rates);
 
+/// A third-party app this account signed in to with "Sign in with ChatGPT".
+@interface AccountAuthorization : NSObject
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic, copy, null_resettable) NSString *appName;
+@property (nonatomic, copy, null_resettable) NSString *clientID;
+/// The redirect address of the authorization request.
+@property (nonatomic, copy, null_resettable) NSString *redirect;
+@property (nonatomic, copy, null_resettable) NSString *scope;
+@property (nonatomic, copy, null_resettable) NSString *note;
+/// "app" when recorded by the authorization window, "manual" when added by hand.
+@property (nonatomic, copy, null_resettable) NSString *source;
+@property (nonatomic, strong) NSDate *firstAuthorizedAt;
+@property (nonatomic, strong) NSDate *lastAuthorizedAt;
+@property (nonatomic) NSInteger count;
+@property (nonatomic, strong, nullable) NSDate *revokedAt;
+@property (nonatomic, readonly, getter=isRevoked) BOOL revoked;
+- (nullable instancetype)initWithDictionary:(NSDictionary *)dictionary;
+- (NSDictionary *)dictionaryRepresentation;
+/// Same client (by client_id, else by redirect address).
+- (BOOL)isSameAppAsClientID:(nullable NSString *)clientID redirect:(nullable NSString *)redirect;
+@end
+
 /// One payment made for an account's subscription.
 @interface AccountPayment : NSObject
 @property (nonatomic, copy) NSString *identifier;
@@ -120,6 +142,8 @@ NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nu
 @property (nonatomic, copy, null_resettable) NSString *cardLast4;
 /// Newest first.
 @property (nonatomic, copy, null_resettable) NSArray<AccountPayment *> *payments;
+/// Most recently authorized first.
+@property (nonatomic, copy, null_resettable) NSArray<AccountAuthorization *> *authorizations;
 @property (nonatomic, strong, nullable) NSDate *createdAt;
 @property (nonatomic, strong, nullable) NSDate *lastUsedAt;
 @property (nonatomic, strong, nullable) NSNumber *signedIn;
@@ -154,6 +178,10 @@ NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nu
 - (BOOL)matchesSearch:(nullable NSString *)query;
 /// Adds payments, skipping charges already recorded; returns how many were new.
 - (NSUInteger)addPayments:(NSArray<AccountPayment *> *)payments;
+/// Notes a successful authorization: updates the app's entry (reviving it if revoked) or adds one.
+- (AccountAuthorization *)recordAuthorizationWithClientID:(nullable NSString *)clientID redirect:(nullable NSString *)redirect
+    scope:(nullable NSString *)scope appName:(NSString *)appName at:(NSDate *)date;
+@property (nonatomic, readonly) NSArray<AccountAuthorization *> *activeAuthorizations;
 @end
 
 @interface AccountStore : NSObject
@@ -180,6 +208,8 @@ NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nu
 - (NSArray<NSString *> *)suppliers;
 /// The default payment methods followed by any others in use.
 - (NSArray<NSString *> *)paymentMethods;
+/// Names of third-party apps with an active authorization, sorted.
+- (NSArray<NSString *> *)authorizedApps;
 /// Sum of the monthly prices of paid accounts, per currency.
 - (NSDictionary<NSString *, NSNumber *> *)monthlySpendByCurrency;
 /// The monthly total in CNY; `missing` receives the currencies without a rate, which are left out.

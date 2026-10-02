@@ -16,6 +16,8 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         case ManagementScopeGroup: return NSColor.secondaryLabelColor;
         case ManagementScopeTag: return DeskColorForTag(scope.value);
         case ManagementScopeSupplier: return scope.value.length ? NSColor.systemTealColor : NSColor.tertiaryLabelColor;
+        case ManagementScopeIncomplete: return NSColor.systemBrownColor;
+        case ManagementScopeAuthorizedApp: return NSColor.systemIndigoColor;
     }
     return NSColor.secondaryLabelColor;
 }
@@ -169,6 +171,11 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         for (NSString *supplier in suppliers) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:supplier]];
         if (unsupplied) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:@""]];
     }
+    NSArray<NSString *> *apps = store.authorizedApps;
+    if (apps.count) {
+        [rows addObject:@"第三方应用"];
+        for (NSString *app in apps) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeAuthorizedApp value:app]];
+    }
     NSArray<NSString *> *tags = store.tags;
     if (tags.count) {
         [rows addObject:@"标签"];
@@ -251,7 +258,8 @@ static NSColor *ScopeTint(ManagementScope *scope) {
     cell.textField.stringValue = scope.title;
     NSUInteger count = self.counts[scope].unsignedIntegerValue;
     cell.countLabel.stringValue = count || scope.kind == ManagementScopeAll ? [NSString stringWithFormat:@"%lu", (unsigned long)count] : @"";
-    BOOL alarming = count && (scope.kind == ManagementScopeQuotaLow || scope.kind == ManagementScopeExpiring);
+    BOOL alarming = count && (scope.kind == ManagementScopeQuotaLow || scope.kind == ManagementScopeExpiring ||
+        scope.kind == ManagementScopeIncomplete);
     cell.textField.font = [NSFont systemFontOfSize:13 weight:alarming ? NSFontWeightSemibold : NSFontWeightRegular];
     return cell;
 }
@@ -270,11 +278,13 @@ static NSColor *ScopeTint(ManagementScope *scope) {
     [menu removeAllItems];
     ManagementScope *scope = [self scopeAtRow:self.tableView.clickedRow];
     if (!scope.value.length) return;
-    NSString *noun = scope.kind == ManagementScopeTag ? @"标签" : (scope.kind == ManagementScopeSupplier ? @"供应商" : @"分组");
+    NSString *noun = scope.kind == ManagementScopeTag ? @"标签" : (scope.kind == ManagementScopeSupplier ? @"供应商"
+        : (scope.kind == ManagementScopeAuthorizedApp ? @"应用" : @"分组"));
     NSMenuItem *rename = [menu addItemWithTitle:[NSString stringWithFormat:@"重命名%@…", noun] action:@selector(renameScope:)
         keyEquivalent:@""];
     NSString *removeTitle = scope.kind == ManagementScopeTag ? @"从所有账号移除此标签"
-        : (scope.kind == ManagementScopeSupplier ? @"清除这些账号的供应商" : @"解散分组（账号移到未分组）");
+        : (scope.kind == ManagementScopeSupplier ? @"清除这些账号的供应商"
+        : (scope.kind == ManagementScopeAuthorizedApp ? @"把这些账号对它的授权标记为已撤销" : @"解散分组（账号移到未分组）"));
     NSMenuItem *remove = [menu addItemWithTitle:removeTitle action:@selector(removeScope:) keyEquivalent:@""];
     for (NSMenuItem *item in @[rename, remove]) {
         item.target = self;
@@ -284,7 +294,8 @@ static NSColor *ScopeTint(ManagementScope *scope) {
 
 - (void)renameScope:(NSMenuItem *)sender {
     ManagementScope *scope = sender.representedObject;
-    NSString *noun = scope.kind == ManagementScopeTag ? @"标签" : (scope.kind == ManagementScopeSupplier ? @"供应商" : @"分组");
+    NSString *noun = scope.kind == ManagementScopeTag ? @"标签" : (scope.kind == ManagementScopeSupplier ? @"供应商"
+        : (scope.kind == ManagementScopeAuthorizedApp ? @"应用" : @"分组"));
     NSAlert *alert = [NSAlert new];
     alert.messageText = [NSString stringWithFormat:@"重命名%@“%@”", noun, scope.value];
     alert.informativeText = @"使用已有名称时会与其合并。";
@@ -308,7 +319,13 @@ static NSColor *ScopeTint(ManagementScope *scope) {
 - (void)replaceScope:(ManagementScope *)scope with:(NSString *)name {
     AccountStore *store = self.coordinator.store;
     for (Account *account in store.accounts) {
-        if (scope.kind == ManagementScopeSupplier && [account.supplier isEqualToString:scope.value]) {
+        if (scope.kind == ManagementScopeAuthorizedApp) {
+            for (AccountAuthorization *authorization in account.authorizations) {
+                if (![authorization.appName isEqualToString:scope.value]) continue;
+                if (name) authorization.appName = name;
+                else if (!authorization.revoked) authorization.revokedAt = NSDate.date;
+            }
+        } else if (scope.kind == ManagementScopeSupplier && [account.supplier isEqualToString:scope.value]) {
             account.supplier = name ?: @"";
         } else if (scope.kind == ManagementScopeGroup && [account.group isEqualToString:scope.value]) {
             account.group = name ?: @"";

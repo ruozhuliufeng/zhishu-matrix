@@ -9,6 +9,8 @@ extern double const AccountLowQuotaPercent;
 
 typedef NS_ENUM(NSInteger, AccountStatusKind) {
     AccountStatusNormal = 0,
+    /// Profile or payment details are missing (see AccountMissingFields).
+    AccountStatusIncomplete,
     AccountStatusRefreshFailed,
     AccountStatusExpiringSoon,
     AccountStatusQuotaLow,
@@ -31,6 +33,10 @@ typedef NS_ENUM(NSInteger, AccountStatusTone) {
 @property (nonatomic, readonly, copy) NSString *symbol;
 + (instancetype)statusForAccount:(Account *)account now:(NSDate *)now;
 @end
+
+/// What is missing from an account's record, in display order: "邮箱", "订阅级别", "续费 / 到期日期", "月费", "币种",
+/// "供应商", "付款方式", "卡尾号", "付款记录", "近 35 天未记付款". Free accounts only need an email and a plan.
+NSArray<NSString *> *AccountMissingFields(Account *account, NSDate *now);
 
 /// Lowercased email → accounts sharing it, for emails used by more than one account.
 NSDictionary<NSString *, NSArray<Account *> *> *AccountDuplicateEmails(NSArray<Account *> *accounts);

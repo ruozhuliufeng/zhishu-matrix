@@ -3,7 +3,8 @@
 #import "AccountInsights.h"
 
 static NSArray<NSString *> *KindNames(void) {
-    return @[@"all", @"quota", @"expiring", @"signedout", @"autorenew", @"duplicates", @"group", @"tag", @"supplier"];
+    return @[@"all", @"quota", @"expiring", @"signedout", @"autorenew", @"duplicates", @"group", @"tag", @"supplier",
+             @"incomplete", @"app"];
 }
 
 NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
@@ -26,9 +27,15 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
 
 + (NSArray<ManagementScope *> *)smartScopes {
     NSMutableArray *scopes = [NSMutableArray array];
-    for (ManagementScopeKind kind = ManagementScopeAll; kind <= ManagementScopeDuplicates; kind++)
-        [scopes addObject:[self scopeWithKind:kind value:nil]];
+    for (NSNumber *kind in @[@(ManagementScopeAll), @(ManagementScopeQuotaLow), @(ManagementScopeExpiring), @(ManagementScopeSignedOut),
+                             @(ManagementScopeAutoRenew), @(ManagementScopeIncomplete), @(ManagementScopeDuplicates)])
+        [scopes addObject:[self scopeWithKind:kind.integerValue value:nil]];
     return scopes;
+}
+
+- (BOOL)hasValue {
+    return self.kind == ManagementScopeGroup || self.kind == ManagementScopeTag || self.kind == ManagementScopeSupplier ||
+        self.kind == ManagementScopeAuthorizedApp;
 }
 
 - (id)copyWithZone:(NSZone *)zone { return self; }
@@ -52,6 +59,8 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeGroup: return self.value.length ? self.value : @"未分组";
         case ManagementScopeTag: return self.value;
         case ManagementScopeSupplier: return self.value.length ? self.value : @"未填写供应商";
+        case ManagementScopeIncomplete: return @"资料不完整";
+        case ManagementScopeAuthorizedApp: return self.value;
     }
     return @"";
 }
@@ -67,6 +76,8 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeGroup: return self.value.length ? @"folder" : @"tray";
         case ManagementScopeTag: return @"tag";
         case ManagementScopeSupplier: return self.value.length ? @"storefront" : @"questionmark.circle";
+        case ManagementScopeIncomplete: return @"list.bullet.clipboard";
+        case ManagementScopeAuthorizedApp: return @"person.badge.key";
     }
     return @"circle";
 }
@@ -88,13 +99,18 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeGroup: return [account.group isEqualToString:self.value];
         case ManagementScopeTag: return [account.tags containsObject:self.value];
         case ManagementScopeSupplier: return [account.supplier isEqualToString:self.value];
+        case ManagementScopeIncomplete: return AccountMissingFields(account, now).count > 0;
+        case ManagementScopeAuthorizedApp:
+            for (AccountAuthorization *authorization in account.activeAuthorizations)
+                if ([authorization.appName isEqualToString:self.value]) return YES;
+            return NO;
     }
     return YES;
 }
 
 - (NSString *)stringValue {
     NSString *name = KindNames()[(NSUInteger)self.kind];
-    return self.kind >= ManagementScopeGroup ? [NSString stringWithFormat:@"%@:%@", name, self.value] : name;
+    return self.hasValue ? [NSString stringWithFormat:@"%@:%@", name, self.value] : name;
 }
 
 + (instancetype)scopeFromString:(NSString *)string {
@@ -104,7 +120,8 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
     NSUInteger kind = [KindNames() indexOfObject:name];
     if (kind == NSNotFound) return nil;
     NSString *value = colon.location == NSNotFound ? nil : [string substringFromIndex:NSMaxRange(colon)];
-    if (kind >= ManagementScopeGroup && !value) return nil;
-    return [self scopeWithKind:(ManagementScopeKind)kind value:value];
+    ManagementScope *scope = [self scopeWithKind:(ManagementScopeKind)kind value:value];
+    if (scope.hasValue != (value != nil)) return nil;
+    return scope;
 }
 @end
