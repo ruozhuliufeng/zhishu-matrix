@@ -1106,7 +1106,9 @@ static NSString *SourceName(NSString *source, id value) {
 - (void)addAuthorization:(id)sender {
     [self commitPendingEdits];
     if (![self account]) return;
-    [self presentEditorForAuthorization:[AccountAuthorization new] isNew:YES];
+    AccountAuthorization *item = [AccountAuthorization new];
+    item.appName = AuthorizationDefaultAppName();
+    [self presentEditorForAuthorization:item isNew:YES];
 }
 
 - (void)presentEditorForAuthorization:(AccountAuthorization *)item isNew:(BOOL)isNew {

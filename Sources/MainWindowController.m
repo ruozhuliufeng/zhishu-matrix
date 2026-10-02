@@ -1225,8 +1225,9 @@ static BOOL IsChatGPTPage(NSURL *url) {
         MainWindowController *strongSelf = weakSelf;
         Account *current = [strongSelf.store accountWithID:finished.accountID];
         if (!current) return;
+        NSString *name = AuthorizationDefaultAppName();
         [current recordAuthorizationWithClientID:details[@"clientID"] redirect:details[@"redirect"] scope:details[@"scope"]
-            appName:details[@"appName"] at:NSDate.date];
+            appName:name.length ? name : details[@"appName"] at:NSDate.date];
         [strongSelf.store commit];
     };
     controller.closed = ^(AuthorizationWindowController *closed) {

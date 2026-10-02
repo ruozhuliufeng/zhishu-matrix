@@ -662,6 +662,13 @@ static void TestAuthorizationRecords(void) {
         [AuthorizationAppName(@"http://localhost:1455/auth/callback") isEqualToString:@"本机应用（localhost:1455）"] &&
         [AuthorizationAppName(@"cursor://auth/callback") isEqualToString:@"cursor"], "names apps after their redirect address");
 
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    [defaults removeObjectForKey:AuthorizationDefaultAppNameDefaultsKey];
+    CHECK([AuthorizationDefaultAppName() isEqualToString:@"AI服务中心"], "names new records AI服务中心 by default");
+    [defaults setObject:@"  " forKey:AuthorizationDefaultAppNameDefaultsKey];
+    CHECK(AuthorizationDefaultAppName().length == 0, "a cleared default name falls back to the redirect address");
+    [defaults removeObjectForKey:AuthorizationDefaultAppNameDefaultsKey];
+
     Account *account = [[Account alloc] initWithDictionary:@{@"id": WorkID, @"name": @"主力"}];
     NSDate *first = [NSDate dateWithTimeIntervalSince1970:1790000000];
     AccountAuthorization *entry = [account recordAuthorizationWithClientID:@"app_123" redirect:request[@"redirect"] scope:@"openid"

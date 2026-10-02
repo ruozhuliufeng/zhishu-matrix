@@ -121,6 +121,7 @@ static NSString *BackupTime(NSDate *date) {
 @property (nonatomic, strong) NSButton *safariToggle;
 @property (nonatomic, strong) NSTextField *authField;
 @property (nonatomic, strong) NSTextField *authError;
+@property (nonatomic, strong) NSTextField *authNameField;
 // Usage & notifications
 @property (nonatomic, strong) NSTextField *notificationStatus;
 // Security
@@ -247,16 +248,23 @@ static NSString *BackupTime(NSDate *date) {
     self.authField.delegate = self;
     self.authField.stringValue = [defaults stringForKey:DefaultAuthorizationURLDefaultsKey] ?: @"";
     [self.authField.heightAnchor constraintEqualToConstant:52].active = YES;
+    self.authNameField = [NSTextField new];
+    self.authNameField.stringValue = AuthorizationDefaultAppName();
+    self.authNameField.placeholderString = @"留空则按回调地址命名";
+    self.authNameField.delegate = self;
     self.authError = DeskLabel(@"无法识别为 http:// 或 https:// 链接，未保存。", 11, NSFontWeightRegular);
     self.authError.textColor = NSColor.systemRedColor;
     self.authError.hidden = YES;
 
     return @[Title(@"菜单栏"), self.statusItemToggle, self.keepRunningToggle,
-        Hint(@"菜单栏图标会列出每个账号的剩余额度，标出推荐使用的账号，并可一键刷新用量。"), DeskSeparator(),
+        Hint(@"菜单栏图标会列出需要处理的账号、30 天内的扣款与到期和每月支出，并可一键刷新用量。"), DeskSeparator(),
         Title(@"网页"), self.safariToggle,
         Hint(@"关闭后，ChatGPT 会把本应用识别为桌面客户端，只显示 Work 和 Codex，账单等设置也会要求前往网页版。修改后已打开的页面会重新载入。"),
         Row(@[DeskLabel(@"自动释放闲置的后台账号页面：", 13, NSFontWeightRegular), release]),
         Hint(@"切换账号后，之前的页面会在后台保留以便快速切回；超过设定时间未使用的页面会被释放以节省内存，再次打开时重新载入。"),
+        DeskSeparator(),
+        Title(@"授权记录的默认名称"), self.authNameField,
+        Hint(@"用本应用授权成功后，新的授权记录使用这个名称，之后可以在账号详情中逐条修改。留空则按回调地址命名（例如 notion.so）。"),
         DeskSeparator(),
         Title(@"默认授权链接"), self.authField, self.authError,
         Hint(@"账号没有单独设置授权链接时，“打开授权链接”会预先填入此地址。每次授权都会生成新链接的第三方应用不需要设置，打开时粘贴最新链接即可。")];
@@ -782,6 +790,9 @@ static NSString *BackupTime(NSDate *date) {
     id field = notification.object;
     if ([self.rateFields.allValues containsObject:field]) { [self saveRateField:field]; return; }
     if (field == self.authField) [self saveAuthorizationURL];
+    else if (field == self.authNameField)
+        [NSUserDefaults.standardUserDefaults setObject:[self.authNameField.stringValue
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] forKey:AuthorizationDefaultAppNameDefaultsKey];
     else if (field == self.proxyField) [self saveProxy];
     else if (field == self.serverField || field == self.usernameField || field == self.passwordField || field == self.folderField)
         [self saveWebDAVFields];

@@ -2,6 +2,13 @@
 
 NSString *const DefaultAuthorizationURLDefaultsKey = @"defaultAuthorizationURL";
 NSString *const CaptureAuthorizationCallbackDefaultsKey = @"captureAuthorizationCallback";
+NSString *const AuthorizationDefaultAppNameDefaultsKey = @"authorizationDefaultAppName";
+
+NSString *AuthorizationDefaultAppName(void) {
+    id value = [NSUserDefaults.standardUserDefaults objectForKey:AuthorizationDefaultAppNameDefaultsKey];
+    NSString *name = [value isKindOfClass:NSString.class] ? value : @"AI服务中心";
+    return [name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+}
 
 static BOOL IsWebURL(NSURL *url) {
     NSString *scheme = url.scheme.lowercaseString;
