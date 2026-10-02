@@ -529,7 +529,10 @@ static void TestAlerts(void) {
     CHECK(AccountAlertsDue(@[renewing, ending, later], now, state, AccountAlertRenewal).count == 0, "reminds once per stage");
     NSDate *nextDay = AccountDateFromDayString(@"2026-10-03");
     alerts = AccountAlertsDue(@[renewing, ending, later], nextDay, state, AccountAlertRenewal);
-    CHECK(alerts.count == 1 && [alerts[0][@"title"] isEqualToString:@"“到期号”明天到期"], "reminds again the day before");
+    CHECK(alerts.count == 2 && [alerts[0][@"title"] isEqualToString:@"“到期号”明天到期"], "reminds again the day before");
+    CHECK([alerts[1][@"kind"] isEqualToString:@"payment"] && [alerts[1][@"date"] isEqualToString:@"2026-10-02"] &&
+        [alerts[1][@"title"] isEqualToString:@"“续费号”已于 2026-10-02 续费，记一笔付款？"], "asks to record the renewal payment");
+    CHECK(AccountAlertsDue(@[renewing, ending, later], nextDay, state, AccountAlertRenewal).count == 0, "asks once per renewal");
     AccountAlertsDue(@[ending], nextDay, state, AccountAlertRenewal);
     CHECK(![[state[@"renewal"] componentsJoinedByString:@","] containsString:TeamID], "forgets reminders of removed accounts");
 }
@@ -749,6 +752,93 @@ static void TestCompleteness(void) {
     CHECK([incomplete includesAccount:account now:now duplicateIDs:[NSSet set]], "the incomplete list includes it");
 }
 
+static void TestPaymentsDue(void) {
+    NSDate *now = AccountDateFromDayString(@"2026-10-02");
+    Account *account = [[Account alloc] initWithDictionary:@{@"id": WorkID, @"name": @"主力", @"plan": @"Pro 200",
+        @"expiresAt": @"2026-10-19", @"autoRenew": @YES, @"monthlyPrice": @1599, @"currency": @"CNY"}];
+    CHECK([AccountUnrecordedRenewal(account, now) isEqualToString:@"2026-09-19"], "the current period's renewal needs a payment");
+    [account addPayments:@[[[AccountPayment alloc] initWithDictionary:@{@"date": @"2026-09-17", @"amount": @1599, @"currency": @"CNY"}]]];
+    CHECK(AccountUnrecordedRenewal(account, now) == nil, "a payment around the renewal counts");
+    account.expiresAt = @"2026-10-02";
+    CHECK([AccountUnrecordedRenewal(account, now) isEqualToString:@"2026-10-02"], "renewal day itself is due before the date moves on");
+    account.autoRenew = @NO;
+    CHECK(AccountUnrecordedRenewal(account, now) == nil, "manual renewals are not predicted");
+    account.autoRenew = @YES;
+    account.plan = @"Free";
+    CHECK(AccountUnrecordedRenewal(account, now) == nil, "free accounts pay nothing");
+
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    [defaults setObject:@[@{@"supplier": @"世事宜AI", @"plan": @"Pro 200", @"amount": @1599, @"currency": @"cny"},
+                          @{@"supplier": @"iOS", @"plan": @"plus", @"amount": @"158", @"currency": @"CNY"},
+                          @{@"supplier": @"", @"plan": @"Plus", @"amount": @1}] forKey:SupplierPricesDefaultsKey];
+    CHECK(AccountSupplierPrices().count == 2, "ignores incomplete price list entries");
+    CHECK([AccountListedPrice(@"iOS", @"Plus")[@"amount"] isEqual:@158] && AccountListedPrice(@"iOS", @"Pro 200") == nil,
+        "looks prices up by supplier and plan");
+    Account *reseller = [Account accountWithName:@"代充"];
+    reseller.plan = @"Pro 200";
+    reseller.supplier = @"世事宜AI";
+    CHECK([reseller applyListedPrice] && [reseller.monthlyPrice isEqual:@1599] && [reseller.currency isEqualToString:@"CNY"] &&
+        [reseller.priceSource isEqualToString:@"list"], "fills the price from the list");
+    CHECK(![reseller applyListedPrice], "applying the same price again changes nothing");
+    reseller.monthlyPrice = @1499;
+    reseller.priceSource = @"manual";
+    CHECK(![reseller applyListedPrice] && [reseller.monthlyPrice isEqual:@1499], "a price typed by hand wins");
+    CHECK([reseller.expectedCharge[@"amount"] isEqual:@1599], "expects the listed price for the next charge");
+    Account *saved = [[Account alloc] initWithDictionary:reseller.dictionaryRepresentation];
+    CHECK([saved.priceSource isEqualToString:@"manual"], "saves where the price came from");
+    [defaults removeObjectForKey:SupplierPricesDefaultsKey];
+}
+
+static void TestExpenseReport(void) {
+    Account *ios = [[Account alloc] initWithDictionary:@{@"id": WorkID, @"name": @"苹果号", @"plan": @"Plus", @"supplier": @"iOS",
+        @"paymentMethod": @"信用卡", @"cardLast4": @"1234", @"expiresAt": @"2026-10-19", @"autoRenew": @YES,
+        @"monthlyPrice": @158, @"currency": @"CNY", @"createdAt": @"2026-08-01T00:00:00Z",
+        @"payments": @[@{@"date": @"2026-08-19", @"amount": @158, @"currency": @"CNY"},
+                       @{@"date": @"2026-09-19", @"amount": @158, @"currency": @"CNY"},
+                       @{@"date": @"2025-12-19", @"amount": @158, @"currency": @"CNY"}]}];
+    Account *reseller = [[Account alloc] initWithDictionary:@{@"id": HomeID, @"name": @"代充号", @"plan": @"Pro 200",
+        @"supplier": @"世事宜AI", @"paymentMethod": @"支付宝", @"expiresAt": @"2026-10-05", @"autoRenew": @NO,
+        @"monthlyPrice": @1599, @"currency": @"CNY",
+        @"payments": @[@{@"date": @"2026-09-05", @"amount": @1599, @"currency": @"CNY"},
+                       @{@"date": @"2026-09-06", @"amount": @20, @"currency": @"USD", @"supplier": @"Bewild"},
+                       @{@"date": @"2026-09-07", @"amount": @100, @"currency": @"PHP"}]}];
+    NSDictionary *rates = @{@"USD": @7, @"CNY": @1};
+    AccountExpenseReport *report = [AccountExpenseReport reportForAccounts:@[ios, reseller] year:2026 rates:rates];
+    CHECK(report.count == 4 && fabs(report.total - (158 * 2 + 1599 + 140)) < 0.001, "totals the year's payments in CNY");
+    CHECK([report.monthTotals[7] isEqual:@158] && fabs(report.monthTotals[8].doubleValue - (158 + 1599 + 140)) < 0.001 &&
+        [report.monthTotals[11] isEqual:@0], "splits the total by month");
+    CHECK([report.monthSupplierTotals[8][@"Bewild"] isEqual:@140], "keeps each payment's own supplier");
+    CHECK([report.bySupplier.firstObject[@"name"] isEqualToString:@"世事宜AI"] && [report.bySupplier.firstObject[@"count"] isEqual:@1],
+        "ranks suppliers by spend");
+    NSArray *sources = [report.bySource valueForKey:@"name"];
+    CHECK([sources containsObject:@"信用卡 · 尾号 1234"] && [sources containsObject:@"支付宝"], "names payment sources");
+    CHECK([report.byAccount.firstObject[@"accountID"] isEqualToString:HomeID], "links account totals to their accounts");
+    NSArray *missingCurrencies = @[@"PHP"];
+    CHECK([report.missingCurrencies isEqualToArray:missingCurrencies], "lists currencies without a rate");
+
+    NSDate *now = AccountDateFromDayString(@"2026-10-02");
+    NSArray *october = [AccountExpenseReport reconciliationForAccounts:@[ios, reseller] month:now now:now rates:rates];
+    CHECK(october.count == 2 && [october[0][@"name"] isEqualToString:@"代充号"] && [october[0][@"state"] isEqualToString:@"upcoming"] &&
+        [october[1][@"date"] isEqualToString:@"2026-10-19"], "expects October's charges by their dates");
+    NSArray *september = [AccountExpenseReport reconciliationForAccounts:@[ios, reseller] month:AccountDateFromDayString(@"2026-09-15")
+        now:now rates:rates];
+    NSDictionary *sepIOS = nil, *sepReseller = nil;
+    for (NSDictionary *row in september) {
+        if ([row[@"accountID"] isEqualToString:WorkID]) sepIOS = row;
+        if ([row[@"accountID"] isEqualToString:HomeID]) sepReseller = row;
+    }
+    CHECK([sepIOS[@"state"] isEqualToString:@"recorded"] && [sepIOS[@"date"] isEqualToString:@"2026-09-19"], "a matching payment is recorded");
+    CHECK([sepReseller[@"state"] isEqualToString:@"extra"], "payments without an expected charge are listed too");
+    NSArray *july = [AccountExpenseReport reconciliationForAccounts:@[ios] month:AccountDateFromDayString(@"2025-11-10") now:now rates:rates];
+    CHECK(july.count == 0, "months before the account was tracked expect nothing");
+    [ios addPayments:@[[[AccountPayment alloc] initWithDictionary:@{@"date": @"2026-10-19", @"amount": @168, @"currency": @"CNY"}]]];
+    october = [AccountExpenseReport reconciliationForAccounts:@[ios] month:now now:AccountDateFromDayString(@"2026-10-20") rates:rates];
+    CHECK([october[0][@"state"] isEqualToString:@"different"], "flags a charge that differs from the expected price");
+    ios.payments = [ios.payments subarrayWithRange:NSMakeRange(1, ios.payments.count - 1)];
+    october = [AccountExpenseReport reconciliationForAccounts:@[ios] month:now now:AccountDateFromDayString(@"2026-10-20") rates:rates];
+    CHECK([october[0][@"state"] isEqualToString:@"missing"], "flags a renewal without a payment once its day has passed");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -771,6 +861,8 @@ int main(void) {
         TestBillingPayments();
         TestAuthorizationRecords();
         TestCompleteness();
+        TestPaymentsDue();
+        TestExpenseReport();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

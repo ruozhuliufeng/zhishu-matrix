@@ -104,6 +104,30 @@ NSString *AccountCardLast4(NSString *text) {
     return digits.length >= 4 ? [digits substringFromIndex:digits.length - 4] : @"";
 }
 
+NSString *const SupplierPricesDefaultsKey = @"supplierPrices";
+NSNotificationName const SupplierPricesDidChangeNotification = @"SupplierPricesDidChangeNotification";
+
+NSArray<NSDictionary *> *AccountSupplierPrices(void) {
+    NSMutableArray *prices = [NSMutableArray array];
+    for (id item in [NSUserDefaults.standardUserDefaults arrayForKey:SupplierPricesDefaultsKey]) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        NSString *supplier = Trimmed(StringOrNil(item[@"supplier"])), *plan = AccountCanonicalPlan(item[@"plan"]);
+        NSNumber *amount = NumberOrNil(item[@"amount"]);
+        if (!supplier.length || !plan || amount.doubleValue <= 0) continue;
+        [prices addObject:@{@"supplier": supplier, @"plan": plan, @"amount": amount,
+            @"currency": Trimmed(StringOrNil(item[@"currency"])).uppercaseString ?: @""}];
+    }
+    return prices;
+}
+
+NSDictionary *AccountListedPrice(NSString *supplier, NSString *plan) {
+    if (!supplier.length || !plan.length) return nil;
+    for (NSDictionary *price in AccountSupplierPrices())
+        if ([price[@"supplier"] isEqualToString:supplier] && [price[@"plan"] isEqualToString:plan])
+            return @{@"amount": price[@"amount"], @"currency": price[@"currency"]};
+    return nil;
+}
+
 NSString *const ExchangeRatesDefaultsKey = @"exchangeRatesToCNY";
 NSNotificationName const ExchangeRatesDidChangeNotification = @"ExchangeRatesDidChangeNotification";
 
@@ -387,7 +411,7 @@ NSDate *AccountDateFromDayString(NSString *day) {
 
 static NSArray<NSString *> *KnownKeys(void) {
     return @[@"id", @"name", @"email", @"plan", @"planSource", @"expiresAt", @"expirySource", @"autoRenew",
-             @"monthlyPrice", @"currency", @"group", @"tags", @"notes", @"authURL", @"proxy", @"supplier", @"paymentMethod", @"cardLast4", @"payments", @"authorizations", @"createdAt", @"lastUsedAt",
+             @"monthlyPrice", @"priceSource", @"currency", @"group", @"tags", @"notes", @"authURL", @"proxy", @"supplier", @"paymentMethod", @"cardLast4", @"payments", @"authorizations", @"createdAt", @"lastUsedAt",
              @"signedIn", @"usage"];
 }
 
@@ -418,6 +442,7 @@ static NSArray<NSString *> *KnownKeys(void) {
         id autoRenew = dictionary[@"autoRenew"];
         _autoRenew = [autoRenew isKindOfClass:NSNumber.class] ? @([autoRenew boolValue]) : nil;
         _monthlyPrice = NumberOrNil(dictionary[@"monthlyPrice"]);
+        _priceSource = _monthlyPrice ? StringOrNil(dictionary[@"priceSource"]) : nil;
         _currency = Trimmed(StringOrNil(dictionary[@"currency"])).uppercaseString;
         _group = Trimmed(StringOrNil(dictionary[@"group"]));
         _tags = AccountNormalizedTags(dictionary[@"tags"]);
@@ -484,6 +509,22 @@ static NSArray<NSString *> *KnownKeys(void) {
 
 - (AccountPayment *)lastPayment { return self.payments.firstObject; }
 
+- (BOOL)applyListedPrice {
+    NSDictionary *listed = AccountListedPrice(self.supplier, self.plan);
+    if (!listed || ([self.priceSource isEqualToString:@"manual"] && self.monthlyPrice)) return NO;
+    BOOL same = [self.monthlyPrice isEqual:listed[@"amount"]] && [self.currency isEqualToString:listed[@"currency"]];
+    self.monthlyPrice = listed[@"amount"];
+    self.currency = listed[@"currency"];
+    self.priceSource = @"list";
+    return !same;
+}
+
+- (NSDictionary *)expectedCharge {
+    NSDictionary *listed = AccountListedPrice(self.supplier, self.plan);
+    if (listed) return listed;
+    return self.monthlyPrice ? @{@"amount": self.monthlyPrice, @"currency": self.currency} : nil;
+}
+
 - (void)setAuthorizations:(NSArray<AccountAuthorization *> *)authorizations {
     _authorizations = [authorizations ?: @[] sortedArrayWithOptions:NSSortStable
         usingComparator:^NSComparisonResult(AccountAuthorization *a, AccountAuthorization *b) {
@@ -547,6 +588,7 @@ static NSArray<NSString *> *KnownKeys(void) {
     }
     if (self.autoRenew) dictionary[@"autoRenew"] = self.autoRenew;
     if (self.monthlyPrice) dictionary[@"monthlyPrice"] = self.monthlyPrice;
+    if (self.monthlyPrice && self.priceSource.length) dictionary[@"priceSource"] = self.priceSource;
     if (self.currency.length) dictionary[@"currency"] = self.currency;
     if (self.group.length) dictionary[@"group"] = self.group;
     if (self.tags.count) dictionary[@"tags"] = self.tags;
@@ -584,7 +626,7 @@ static NSArray<NSString *> *KnownKeys(void) {
     if (other.plan) { self.plan = other.plan; self.planSource = other.planSource; }
     if (other.expiresAt) { self.expiresAt = other.expiresAt; self.expirySource = other.expirySource; }
     if (other.autoRenew) self.autoRenew = other.autoRenew;
-    if (other.monthlyPrice) { self.monthlyPrice = other.monthlyPrice; self.currency = other.currency; }
+    if (other.monthlyPrice) { self.monthlyPrice = other.monthlyPrice; self.currency = other.currency; self.priceSource = other.priceSource; }
     if (other.group.length) self.group = other.group;
     if (other.tags.count) self.tags = [self.tags arrayByAddingObjectsFromArray:other.tags];
     if (other.notes.length) self.notes = other.notes;

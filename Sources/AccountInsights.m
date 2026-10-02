@@ -188,7 +188,7 @@ NSArray<NSDictionary<NSString *, NSString *> *> *AccountAlertsDue(NSArray<Accoun
         if (!(kinds & AccountAlertRenewal) || !days || days.integerValue < 0) continue;
         NSInteger left = days.integerValue;
         BOOL renews = account.autoRenew.boolValue;
-        NSString *bucket = renews ? (left <= 1 ? @"renew" : nil) : (left == 0 ? @"0" : (left == 1 ? @"1" : (left <= 3 ? @"3" : nil)));
+        NSString *bucket = renews ? (left == 1 ? @"renew" : nil) : (left == 0 ? @"0" : (left == 1 ? @"1" : (left <= 3 ? @"3" : nil)));
         if (!bucket) continue;
         NSString *key = [NSString stringWithFormat:@"%@|%@|%@", identifier, account.expiresAt, bucket];
         if ([renewals containsObject:key]) continue;
@@ -203,8 +203,197 @@ NSArray<NSDictionary<NSString *, NSString *> *> *AccountAlertsDue(NSArray<Accoun
         [alerts addObject:@{@"id": [@"renewal." stringByAppendingString:key], @"kind": @"renewal", @"accountID": identifier,
             @"title": title, @"body": body}];
     }
+
+    // Renewals that went through without a payment being recorded.
+    NSMutableArray *payments = MutableList(state, @"payment");
+    NSString *cutoff = AccountDayString([now dateByAddingTimeInterval:-60 * 86400]);
+    [payments filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *key, NSDictionary *bindings) {
+        NSArray *parts = [key componentsSeparatedByString:@"|"];
+        return parts.count == 2 && [known containsObject:parts[0]] && [parts[1] compare:cutoff] != NSOrderedAscending;
+    }]];
+    if (!(kinds & AccountAlertRenewal)) return alerts;
+    NSString *weekAgo = AccountDayString([now dateByAddingTimeInterval:-7 * 86400]);
+    NSDictionary *rates = AccountExchangeRates();
+    for (Account *account in accounts) {
+        NSString *date = AccountUnrecordedRenewal(account, now);
+        // Older gaps are listed in the app instead of arriving as a burst of notifications.
+        if (!date || [date compare:weekAgo] == NSOrderedAscending) continue;
+        NSString *key = [NSString stringWithFormat:@"%@|%@", account.identifier, date];
+        if ([payments containsObject:key]) continue;
+        [payments addObject:key];
+        NSDictionary *charge = account.expectedCharge;
+        NSNumber *cny = AccountAmountInCNY(charge[@"amount"], charge[@"currency"], rates);
+        NSString *amount = cny ? AccountFormatCNY(cny) : (charge ? AccountFormatMoney(charge[@"amount"], charge[@"currency"]) : nil);
+        NSMutableArray *details = [NSMutableArray arrayWithObject:account.planTitle];
+        if (amount) [details addObject:amount];
+        if (account.paymentSummary.length) [details addObject:account.paymentSummary];
+        BOOL today = [date isEqualToString:AccountDayString(now)];
+        [alerts addObject:@{@"id": [@"payment." stringByAppendingString:key], @"kind": @"payment",
+            @"accountID": account.identifier, @"date": date,
+            @"title": today ? [NSString stringWithFormat:@"“%@”今天续费，记一笔付款？", account.name]
+                            : [NSString stringWithFormat:@"“%@”已于 %@ 续费，记一笔付款？", account.name, date],
+            @"body": [details componentsJoinedByString:@" · "]}];
+    }
     return alerts;
 }
+
+#pragma mark - Payments due
+
+NSString *AccountUnrecordedRenewal(Account *account, NSDate *now) {
+    NSDate *expiry = AccountDateFromDayString(account.expiresAt);
+    if (!account.isPaid || !account.autoRenew.boolValue || !expiry) return nil;
+    NSCalendar *calendar = NSCalendar.currentCalendar;
+    NSDate *today = [calendar startOfDayForDate:now];
+    NSDate *renewal = [expiry compare:today] != NSOrderedDescending ? expiry
+        : [calendar dateByAddingUnit:NSCalendarUnitMonth value:-1 toDate:expiry options:0];
+    if ([renewal compare:today] == NSOrderedDescending) return nil;
+    NSString *earliest = AccountDayString([renewal dateByAddingTimeInterval:-3 * 86400]);
+    for (AccountPayment *payment in account.payments)
+        if ([payment.date compare:earliest] != NSOrderedAscending) return nil;
+    return AccountDayString(renewal);
+}
+
+#pragma mark - Expense report
+
+static NSArray<NSDictionary *> *SortedGroups(NSDictionary<NSString *, NSNumber *> *totals, NSDictionary<NSString *, NSNumber *> *counts,
+    NSDictionary<NSString *, NSString *> *ids) {
+    NSMutableArray *groups = [NSMutableArray array];
+    for (NSString *name in counts) {
+        NSMutableDictionary *group = [@{@"name": name, @"total": totals[name] ?: @0, @"count": counts[name]} mutableCopy];
+        if (ids[name]) group[@"accountID"] = ids[name];
+        [groups addObject:group];
+    }
+    [groups sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSComparisonResult result = [b[@"total"] compare:a[@"total"]];
+        return result != NSOrderedSame ? result : [a[@"name"] localizedStandardCompare:b[@"name"]];
+    }];
+    return groups;
+}
+
+static void Add(NSMutableDictionary<NSString *, NSNumber *> *totals, NSString *key, double value) {
+    totals[key] = @(totals[key].doubleValue + value);
+}
+
+@implementation AccountExpenseReport
+
++ (instancetype)reportForAccounts:(NSArray<Account *> *)accounts year:(NSInteger)year rates:(NSDictionary<NSString *, NSNumber *> *)rates {
+    AccountExpenseReport *report = [self new];
+    report->_year = year;
+    NSMutableArray<NSNumber *> *months = [NSMutableArray array];
+    NSMutableArray<NSMutableDictionary *> *monthSuppliers = [NSMutableArray array];
+    for (NSInteger month = 0; month < 12; month++) {
+        [months addObject:@0];
+        [monthSuppliers addObject:[NSMutableDictionary dictionary]];
+    }
+    NSMutableDictionary *supplierTotals = [NSMutableDictionary dictionary], *supplierCounts = [NSMutableDictionary dictionary];
+    NSMutableDictionary *sourceTotals = [NSMutableDictionary dictionary], *sourceCounts = [NSMutableDictionary dictionary];
+    NSMutableDictionary *accountTotals = [NSMutableDictionary dictionary], *accountCounts = [NSMutableDictionary dictionary];
+    NSMutableDictionary *accountIDs = [NSMutableDictionary dictionary];
+    NSMutableOrderedSet *missing = [NSMutableOrderedSet orderedSet];
+    NSString *prefix = [NSString stringWithFormat:@"%04ld-", (long)year];
+    double total = 0;
+    NSUInteger count = 0;
+    for (Account *account in accounts) {
+        NSString *accountKey = account.name;
+        if (accountIDs[accountKey] && ![accountIDs[accountKey] isEqualToString:account.identifier])
+            accountKey = [NSString stringWithFormat:@"%@（%@）", account.name, [account.identifier substringToIndex:4]];
+        for (AccountPayment *payment in account.payments) {
+            if (![payment.date hasPrefix:prefix]) continue;
+            NSNumber *cny = AccountAmountInCNY(payment.amount, payment.currency, rates);
+            if (!cny) {
+                [missing addObject:payment.currency.length ? payment.currency : @"未填币种"];
+                continue;
+            }
+            NSInteger month = [[payment.date substringWithRange:NSMakeRange(5, 2)] integerValue] - 1;
+            if (month < 0 || month > 11) continue;
+            double value = cny.doubleValue;
+            NSString *supplier = payment.supplier.length ? payment.supplier : (account.supplier.length ? account.supplier : @"未填写供应商");
+            NSString *method = payment.paymentMethod.length ? payment.paymentMethod : account.paymentMethod;
+            NSString *card = payment.cardLast4.length ? payment.cardLast4 : account.cardLast4;
+            NSString *source = method.length ? method : @"未填写付款方式";
+            if (card.length) source = [NSString stringWithFormat:@"%@ · 尾号 %@", source, card];
+            months[month] = @(months[month].doubleValue + value);
+            Add(monthSuppliers[month], supplier, value);
+            Add(supplierTotals, supplier, value);
+            Add(supplierCounts, supplier, 1);
+            Add(sourceTotals, source, value);
+            Add(sourceCounts, source, 1);
+            Add(accountTotals, accountKey, value);
+            Add(accountCounts, accountKey, 1);
+            accountIDs[accountKey] = account.identifier;
+            total += value;
+            count++;
+        }
+    }
+    report->_total = total;
+    report->_count = count;
+    report->_monthTotals = months;
+    report->_monthSupplierTotals = monthSuppliers;
+    report->_bySupplier = SortedGroups(supplierTotals, supplierCounts, nil);
+    report->_bySource = SortedGroups(sourceTotals, sourceCounts, nil);
+    report->_byAccount = SortedGroups(accountTotals, accountCounts, accountIDs);
+    report->_missingCurrencies = [missing.array sortedArrayUsingSelector:@selector(compare:)];
+    return report;
+}
+
++ (NSArray<NSDictionary *> *)reconciliationForAccounts:(NSArray<Account *> *)accounts month:(NSDate *)day now:(NSDate *)now
+    rates:(NSDictionary<NSString *, NSNumber *> *)rates {
+    NSCalendar *calendar = NSCalendar.currentCalendar;
+    NSDateComponents *target = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth fromDate:day];
+    NSString *prefix = [NSString stringWithFormat:@"%04ld-%02ld-", (long)target.year, (long)target.month];
+    NSDate *monthStart = [calendar dateFromComponents:target];
+    NSString *today = AccountDayString(now);
+    NSMutableArray *rows = [NSMutableArray array];
+    for (Account *account in accounts) {
+        double recorded = 0;
+        BOOL anyRecorded = NO;
+        for (AccountPayment *payment in account.payments) {
+            if (![payment.date hasPrefix:prefix]) continue;
+            anyRecorded = YES;
+            recorded += AccountAmountInCNY(payment.amount, payment.currency, rates).doubleValue;
+        }
+        // The charge expected this month: the renewal day moved into this month for auto-renewals,
+        // the expiry for subscriptions renewed by hand.
+        NSString *date = @"";
+        NSDate *expiry = AccountDateFromDayString(account.expiresAt);
+        if (account.isPaid && expiry) {
+            if (account.autoRenew.boolValue) {
+                NSDateComponents *from = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth fromDate:expiry];
+                NSInteger shift = (target.year - from.year) * 12 + (target.month - from.month);
+                NSDate *candidate = [calendar dateByAddingUnit:NSCalendarUnitMonth value:shift toDate:expiry options:0];
+                // Months before the account was being tracked expect nothing.
+                NSDate *tracked = account.createdAt;
+                NSDate *firstPayment = AccountDateFromDayString(account.payments.lastObject.date);
+                if (firstPayment && (!tracked || [firstPayment compare:tracked] == NSOrderedAscending)) tracked = firstPayment;
+                NSDate *trackedMonth = tracked ? [calendar dateFromComponents:[calendar components:NSCalendarUnitYear | NSCalendarUnitMonth
+                    fromDate:tracked]] : nil;
+                if (candidate && [AccountDayString(candidate) hasPrefix:prefix] &&
+                    (!trackedMonth || [monthStart compare:trackedMonth] != NSOrderedAscending))
+                    date = AccountDayString(candidate);
+            } else if ([account.expiresAt hasPrefix:prefix]) {
+                date = account.expiresAt;
+            }
+        }
+        if (!date.length && !anyRecorded) continue;
+        NSDictionary *charge = account.expectedCharge;
+        NSNumber *expected = date.length ? AccountAmountInCNY(charge[@"amount"], charge[@"currency"], rates) : nil;
+        NSString *state = @"extra";
+        if (date.length) {
+            if (anyRecorded) state = !expected || fabs(expected.doubleValue - recorded) <= MAX(1, expected.doubleValue * 0.01)
+                ? @"recorded" : @"different";
+            else state = [date compare:today] == NSOrderedDescending ? @"upcoming" : @"missing";
+        }
+        [rows addObject:@{@"accountID": account.identifier, @"name": account.name, @"date": date,
+            @"expected": expected ?: (id)NSNull.null, @"recorded": @(recorded), @"state": state}];
+    }
+    [rows sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSString *left = [a[@"date"] length] ? a[@"date"] : @"9999", *right = [b[@"date"] length] ? b[@"date"] : @"9999";
+        NSComparisonResult result = [left compare:right];
+        return result != NSOrderedSame ? result : [a[@"name"] localizedStandardCompare:b[@"name"]];
+    }];
+    return rows;
+}
+@end
 
 #pragma mark - Calendar
 

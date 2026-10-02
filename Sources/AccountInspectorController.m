@@ -876,6 +876,7 @@ static NSString *SourceName(NSString *source, id value) {
         NSNumber *price = [self.priceField.objectValue isKindOfClass:NSNumber.class] ? self.priceField.objectValue : nil;
         if (price == account.monthlyPrice || [price isEqual:account.monthlyPrice]) return;
         account.monthlyPrice = price;
+        account.priceSource = price ? @"manual" : nil;
         [self save];
     } else if (field == self.currencyBox) {
         [self currencyChosen:self.currencyBox];
@@ -887,7 +888,9 @@ static NSString *SourceName(NSString *source, id value) {
     if (!account) return;
     NSString *before = account.currency;
     account.currency = self.currencyBox.stringValue;
-    if (![before isEqualToString:account.currency]) [self save];
+    if ([before isEqualToString:account.currency]) return;
+    if (account.monthlyPrice) account.priceSource = @"manual";
+    [self save];
 }
 
 - (void)autoRenewToggled:(id)sender {
@@ -912,7 +915,9 @@ static NSString *SourceName(NSString *source, id value) {
     NSString *supplier = account.supplier, *method = account.paymentMethod;
     if (sender == self.supplierBox) account.supplier = self.supplierBox.stringValue;
     if (sender == self.methodBox) account.paymentMethod = self.methodBox.stringValue;
-    if (![supplier isEqualToString:account.supplier] || ![method isEqualToString:account.paymentMethod]) [self save];
+    if ([supplier isEqualToString:account.supplier] && [method isEqualToString:account.paymentMethod]) return;
+    [account applyListedPrice];
+    [self save];
 }
 
 - (void)cardEdited {
@@ -1184,13 +1189,17 @@ static NSString *SourceName(NSString *source, id value) {
     }];
 }
 
-- (void)addPayment:(id)sender {
+- (void)addPayment:(id)sender { [self presentAddPaymentWithDate:nil]; }
+
+- (void)presentAddPaymentWithDate:(NSString *)date {
     [self commitPendingEdits];
     Account *account = [self account];
     if (!account) return;
     AccountPayment *payment = [AccountPayment new];
-    payment.amount = account.monthlyPrice ?: @0;
-    payment.currency = account.currency.length ? account.currency : @"CNY";
+    NSDictionary *charge = account.expectedCharge;
+    payment.amount = charge[@"amount"] ?: @0;
+    payment.currency = [charge[@"currency"] length] ? charge[@"currency"] : @"CNY";
+    if (AccountDateFromDayString(date)) payment.date = date;
     payment.supplier = account.supplier;
     payment.paymentMethod = account.paymentMethod;
     payment.cardLast4 = account.cardLast4;
@@ -1422,6 +1431,7 @@ static NSString *SourceName(NSString *source, id value) {
     NSString *plan = AccountCanonicalPlan(self.planPicker.titleOfSelectedItem);
     account.plan = plan;
     account.planSource = plan ? @"manual" : nil;
+    [account applyListedPrice];
     [self save];
 }
 

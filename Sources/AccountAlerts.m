@@ -9,6 +9,8 @@ NSString *const NotifySignedOutDefaultsKey = @"notifySignedOut";
 NSNotificationName const AlertSettingsDidChangeNotification = @"AlertSettingsDidChangeNotification";
 
 static NSString *const AlertStateDefaultsKey = @"alertState";
+static NSString *const PaymentCategory = @"payment";
+static NSString *const RecordPaymentAction = @"record-payment";
 
 @interface AccountAlerts () <UNUserNotificationCenterDelegate>
 @end
@@ -42,6 +44,10 @@ static NSString *const AlertStateDefaultsKey = @"alertState";
 - (void)start {
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     center.delegate = self;
+    UNNotificationAction *record = [UNNotificationAction actionWithIdentifier:RecordPaymentAction title:@"记一笔"
+        options:UNNotificationActionOptionForeground];
+    [center setNotificationCategories:[NSSet setWithObject:[UNNotificationCategory categoryWithIdentifier:PaymentCategory
+        actions:@[record] intentIdentifiers:@[] options:0]]];
     if (self.enabledKinds)
         [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
             completionHandler:^(BOOL granted, NSError *error) {}];
@@ -75,7 +81,9 @@ static NSString *const AlertStateDefaultsKey = @"alertState";
     content.body = alert[@"body"];
     content.sound = UNNotificationSound.defaultSound;
     content.threadIdentifier = alert[@"accountID"];
-    content.userInfo = @{@"accountID": alert[@"accountID"]};
+    BOOL payment = [alert[@"kind"] isEqualToString:@"payment"] || [alert[@"kind"] isEqualToString:@"renewal"];
+    if (payment) content.categoryIdentifier = PaymentCategory;
+    content.userInfo = @{@"accountID": alert[@"accountID"], @"kind": alert[@"kind"] ?: @"", @"date": alert[@"date"] ?: @""};
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:alert[@"id"] content:content trigger:nil];
     [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:nil];
 }
@@ -110,8 +118,14 @@ static NSString *const AlertStateDefaultsKey = @"alertState";
     withCompletionHandler:(void (^)(void))completionHandler {
     NSDictionary *info = response.notification.request.content.userInfo;
     NSString *identifier = info[@"accountID"];
+    NSString *date = [info[@"date"] isKindOfClass:NSString.class] ? info[@"date"] : @"";
+    // A payment prompt opens the payment form, whether its button or the notification itself was clicked.
+    BOOL record = [response.actionIdentifier isEqualToString:RecordPaymentAction] || [info[@"kind"] isEqual:@"payment"];
     dispatch_async(dispatch_get_main_queue(), ^{
-        if ([identifier isKindOfClass:NSString.class] && self.openAccount) self.openAccount(identifier);
+        if ([identifier isKindOfClass:NSString.class]) {
+            if (record && self.recordPayment) self.recordPayment(identifier, date);
+            else if (self.openAccount) self.openAccount(identifier);
+        }
         completionHandler();
     });
 }

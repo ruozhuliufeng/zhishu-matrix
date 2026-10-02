@@ -45,6 +45,14 @@ NSDictionary<NSString *, NSNumber *> *AccountExchangeRates(void);
 NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nullable currency,
     NSDictionary<NSString *, NSNumber *> *rates);
 
+/// NSUserDefaults key: the supplier price list, [{@"supplier", @"plan", @"amount", @"currency"}].
+extern NSString *const SupplierPricesDefaultsKey;
+extern NSNotificationName const SupplierPricesDidChangeNotification;
+/// Valid entries of the saved price list.
+NSArray<NSDictionary *> *AccountSupplierPrices(void);
+/// {@"amount", @"currency"} listed for this supplier and plan, if any.
+NSDictionary *_Nullable AccountListedPrice(NSString *_Nullable supplier, NSString *_Nullable plan);
+
 /// A third-party app this account signed in to with "Sign in with ChatGPT".
 @interface AccountAuthorization : NSObject
 @property (nonatomic, copy) NSString *identifier;
@@ -126,6 +134,8 @@ NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nu
 @property (nonatomic, copy, nullable) NSString *expirySource;
 @property (nonatomic, strong, nullable) NSNumber *autoRenew;
 @property (nonatomic, strong, nullable) NSNumber *monthlyPrice;
+/// Where the monthly price came from: "list" (supplier price list), "page" (billing page) or "manual".
+@property (nonatomic, copy, nullable) NSString *priceSource;
 @property (nonatomic, copy, null_resettable) NSString *currency;
 @property (nonatomic, copy, null_resettable) NSString *group;
 @property (nonatomic, copy, null_resettable) NSArray<NSString *> *tags;
@@ -176,6 +186,11 @@ NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nu
 /// For narrow columns: "10/25 续费 · 24 天", "10/5 到期 · 4 天", "9/28 已过期"; empty when unknown.
 - (NSString *)compactRenewalDescriptionFromDate:(NSDate *)now;
 - (BOOL)matchesSearch:(nullable NSString *)query;
+/// Takes the price list's price for this supplier and plan unless the price was typed in by hand.
+/// Returns YES when the price changed.
+- (BOOL)applyListedPrice;
+/// What the next charge should be: the listed price, else the monthly price ({@"amount", @"currency"}).
+@property (nonatomic, readonly, nullable) NSDictionary *expectedCharge;
 /// Adds payments, skipping charges already recorded; returns how many were new.
 - (NSUInteger)addPayments:(NSArray<AccountPayment *> *)payments;
 /// Notes a successful authorization: updates the app's entry (reviving it if revoked) or adds one.

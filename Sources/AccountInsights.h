@@ -38,6 +38,34 @@ typedef NS_ENUM(NSInteger, AccountStatusTone) {
 /// "供应商", "付款方式", "卡尾号", "付款记录", "近 35 天未记付款". Free accounts only need an email and a plan.
 NSArray<NSString *> *AccountMissingFields(Account *account, NSDate *now);
 
+/// The latest renewal of an auto-renewing paid account with no payment recorded within three days before it
+/// or any time after ("yyyy-MM-dd"), or nil. The renewal is `expiresAt` once that day has come, otherwise the
+/// month before it.
+NSString *_Nullable AccountUnrecordedRenewal(Account *account, NSDate *now);
+
+/// Actual spend in one year, from payment records, converted to CNY.
+@interface AccountExpenseReport : NSObject
+@property (nonatomic, readonly) NSInteger year;
+@property (nonatomic, readonly) double total;
+@property (nonatomic, readonly) NSUInteger count;
+/// Twelve totals, January first.
+@property (nonatomic, readonly) NSArray<NSNumber *> *monthTotals;
+/// Twelve {supplier: total} dictionaries.
+@property (nonatomic, readonly) NSArray<NSDictionary<NSString *, NSNumber *> *> *monthSupplierTotals;
+/// [{@"name", @"total", @"count"}] largest first; byAccount entries also carry @"accountID".
+@property (nonatomic, readonly) NSArray<NSDictionary *> *bySupplier;
+@property (nonatomic, readonly) NSArray<NSDictionary *> *bySource;
+@property (nonatomic, readonly) NSArray<NSDictionary *> *byAccount;
+/// Currencies of payments left out for lack of a rate.
+@property (nonatomic, readonly) NSArray<NSString *> *missingCurrencies;
++ (instancetype)reportForAccounts:(NSArray<Account *> *)accounts year:(NSInteger)year rates:(NSDictionary<NSString *, NSNumber *> *)rates;
+/// What each account was expected to pay in the month containing `day` against what was recorded, sorted by date:
+/// [{@"accountID", @"name", @"date" ("" if none), @"expected" (CNY or NSNull), @"recorded" (CNY),
+///   @"state": recorded | different | missing | upcoming | extra}].
++ (NSArray<NSDictionary *> *)reconciliationForAccounts:(NSArray<Account *> *)accounts month:(NSDate *)day now:(NSDate *)now
+    rates:(NSDictionary<NSString *, NSNumber *> *)rates;
+@end
+
 /// Lowercased email → accounts sharing it, for emails used by more than one account.
 NSDictionary<NSString *, NSArray<Account *> *> *AccountDuplicateEmails(NSArray<Account *> *accounts);
 
@@ -54,7 +82,7 @@ typedef NS_OPTIONS(NSUInteger, AccountAlertKinds) {
     AccountAlertSignedOut = 1 << 2,  // an account that was signed in is signed out
 };
 
-/// Works out which notifications are due. `state` remembers what was already announced (keep it between
+/// Works out which notifications are due. Payment prompts ({kind: payment, date}) come with the renewal kind. `state` remembers what was already announced (keep it between
 /// launches); it is updated in place. Each alert: {id, kind, accountID, title, body}.
 NSArray<NSDictionary<NSString *, NSString *> *> *AccountAlertsDue(NSArray<Account *> *accounts, NSDate *now,
     NSMutableDictionary *state, AccountAlertKinds kinds);

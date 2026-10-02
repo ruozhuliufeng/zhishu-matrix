@@ -145,6 +145,10 @@ static NSString *BackupTime(NSDate *date) {
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSTextField *> *rateFields;
 @property (nonatomic, strong) NSComboBox *currencyPicker;
 @property (nonatomic, strong) NSMutableSet<NSString *> *pendingCurrencies;
+@property (nonatomic, strong) NSStackView *pricesStack;
+/// One {supplier, plan, amount, currency} control set per row of the price list.
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *priceRows;
+@property (nonatomic, strong) NSTextField *pricesStatus;
 // Network
 @property (nonatomic, strong) NSTextField *proxyField;
 @property (nonatomic, strong) NSTextField *proxyResult;
@@ -236,6 +240,8 @@ static NSString *BackupTime(NSDate *date) {
     self.safariToggle = [NSButton checkboxWithTitle:@"以 Safari 浏览器身份打开网页（推荐）" target:self action:@selector(safariToggled:)];
     self.safariToggle.state = BrowserPreferredUserAgent() ? NSControlStateValueOn : NSControlStateValueOff;
 
+    NSPopUpButton *launch = PopUp(@[@[@"账号管理", @0], @[@"上次使用的视图", @1]],
+        [defaults integerForKey:LaunchViewDefaultsKey], self, @selector(launchViewChanged:));
     NSPopUpButton *release = PopUp(@[@[@"从不", @0], @[@"15 分钟", @15], @[@"30 分钟", @30], @[@"1 小时", @60], @[@"2 小时", @120]],
         [defaults integerForKey:ReleaseIdlePagesMinutesDefaultsKey], self, @selector(releaseIntervalChanged:));
 
@@ -258,6 +264,7 @@ static NSString *BackupTime(NSDate *date) {
 
     return @[Title(@"菜单栏"), self.statusItemToggle, self.keepRunningToggle,
         Hint(@"菜单栏图标会列出需要处理的账号、30 天内的扣款与到期和每月支出，并可一键刷新用量。"), DeskSeparator(),
+        Title(@"启动"), Row(@[DeskLabel(@"打开智枢矩阵时显示：", 13, NSFontWeightRegular), launch]), DeskSeparator(),
         Title(@"网页"), self.safariToggle,
         Hint(@"关闭后，ChatGPT 会把本应用识别为桌面客户端，只显示 Work 和 Codex，账单等设置也会要求前往网页版。修改后已打开的页面会重新载入。"),
         Row(@[DeskLabel(@"自动释放闲置的后台账号页面：", 13, NSFontWeightRegular), release]),
@@ -281,6 +288,10 @@ static NSString *BackupTime(NSDate *date) {
 - (void)safariToggled:(id)sender {
     [NSUserDefaults.standardUserDefaults setBool:self.safariToggle.state == NSControlStateValueOn forKey:IdentifyAsSafariDefaultsKey];
     [NSNotificationCenter.defaultCenter postNotificationName:BrowserUserAgentPreferenceDidChangeNotification object:nil];
+}
+
+- (void)launchViewChanged:(NSPopUpButton *)sender {
+    [NSUserDefaults.standardUserDefaults setInteger:sender.selectedTag forKey:LaunchViewDefaultsKey];
 }
 
 - (void)releaseIntervalChanged:(NSPopUpButton *)sender {
@@ -661,9 +672,101 @@ static NSString *BackupTime(NSDate *date) {
     [self.currencyPicker.widthAnchor constraintEqualToConstant:110].active = YES;
     NSButton *add = [NSButton buttonWithTitle:@"添加币种" target:self action:@selector(addCurrency:)];
     [self rebuildRates];
+    self.pricesStack = [NSStackView new];
+    self.pricesStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.pricesStack.alignment = NSLayoutAttributeLeading;
+    self.pricesStack.spacing = 6;
+    self.priceRows = [NSMutableArray array];
+    self.pricesStatus = Hint(@"");
+    for (NSDictionary *price in AccountSupplierPrices()) [self addPriceRow:price];
+    if (!self.priceRows.count) [self addPriceRow:@{}];
+    NSButton *addPrice = [NSButton buttonWithTitle:@"添加一行" target:self action:@selector(addPriceRowClicked:)];
     return @[Title(@"汇率（换算为人民币）"), self.ratesStack, Row(@[self.currencyPicker, add]),
         Hint(@"所有费用统一折合为人民币显示与汇总：每月支出、续费日历、菜单栏和付款记录。汇率按“1 单位外币 = 多少人民币”填写，"
-             "需要手动维护；没有填写汇率的币种不计入人民币合计，并会提示“未设汇率”。账号或付款记录中用到的币种会自动列出。")];
+             "需要手动维护；没有填写汇率的币种不计入人民币合计，并会提示“未设汇率”。账号或付款记录中用到的币种会自动列出。"),
+        DeskSeparator(), Title(@"供应商价目表"), self.pricesStack, Row(@[addPrice, self.pricesStatus]),
+        Hint(@"填写每个供应商各档位的月费。账号设置了供应商和档位后，月费和币种会按此自动填写，记一笔付款时也按此预填金额；"
+             "在账号详情中手动改过的月费不会被覆盖。修改价目表会立即更新使用价目表价格的账号。")];
+}
+
+- (void)addPriceRow:(NSDictionary *)price {
+    NSComboBox *supplier = [NSComboBox new];
+    [supplier addItemsWithObjectValues:self.store.suppliers];
+    supplier.stringValue = price[@"supplier"] ?: @"";
+    supplier.placeholderString = @"供应商";
+    NSPopUpButton *plan = [NSPopUpButton new];
+    [plan addItemWithTitle:@"档位"];
+    [plan.menu addItem:[NSMenuItem separatorItem]];
+    [plan addItemsWithTitles:AccountPlans()];
+    if (price[@"plan"]) [plan selectItemWithTitle:price[@"plan"]];
+    NSTextField *amount = [NSTextField new];
+    NSNumberFormatter *formatter = [NSNumberFormatter new];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    formatter.minimum = @0;
+    formatter.maximumFractionDigits = 2;
+    formatter.lenient = YES;
+    amount.formatter = formatter;
+    amount.objectValue = price[@"amount"];
+    amount.placeholderString = @"月费";
+    NSComboBox *currency = [NSComboBox new];
+    [currency addItemsWithObjectValues:@[@"CNY", @"USD", @"PHP", @"HKD", @"TWD", @"EUR"]];
+    currency.stringValue = [price[@"currency"] length] ? price[@"currency"] : @"CNY";
+    NSButton *remove = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"minus.circle" accessibilityDescription:@"删除"]
+        target:self action:@selector(removePriceRow:)];
+    remove.bordered = NO;
+    [supplier.widthAnchor constraintEqualToConstant:140].active = YES;
+    [amount.widthAnchor constraintEqualToConstant:96].active = YES;
+    [currency.widthAnchor constraintEqualToConstant:76].active = YES;
+    for (NSControl *control in @[supplier, plan, currency]) {
+        control.target = self;
+        control.action = @selector(priceListChanged:);
+    }
+    for (NSTextField *field in @[supplier, amount, currency]) field.delegate = self;
+    NSStackView *row = Row(@[supplier, plan, amount, currency, remove]);
+    NSDictionary *controls = @{@"supplier": supplier, @"plan": plan, @"amount": amount, @"currency": currency, @"row": row};
+    remove.tag = (NSInteger)self.priceRows.count;
+    [self.priceRows addObject:controls];
+    [self.pricesStack addArrangedSubview:row];
+}
+
+- (void)addPriceRowClicked:(id)sender {
+    [self addPriceRow:@{}];
+    [self.tabs fitItem:self.tabs.tabView.selectedTabViewItem];
+    [self.window makeFirstResponder:self.priceRows.lastObject[@"supplier"]];
+}
+
+- (void)removePriceRow:(NSButton *)sender {
+    NSDictionary *controls = nil;
+    for (NSDictionary *candidate in self.priceRows)
+        if ([[candidate[@"row"] arrangedSubviews] containsObject:sender]) controls = candidate;
+    if (!controls) return;
+    [controls[@"row"] removeFromSuperview];
+    [self.priceRows removeObject:controls];
+    [self savePriceList];
+    [self.tabs fitItem:self.tabs.tabView.selectedTabViewItem];
+}
+
+- (void)priceListChanged:(id)sender { [self savePriceList]; }
+
+- (void)savePriceList {
+    NSMutableArray *prices = [NSMutableArray array];
+    for (NSDictionary *controls in self.priceRows) {
+        NSString *supplier = [[controls[@"supplier"] stringValue] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *plan = AccountCanonicalPlan([controls[@"plan"] titleOfSelectedItem]);
+        id amount = [controls[@"amount"] objectValue];
+        NSString *currency = [[controls[@"currency"] stringValue] uppercaseString];
+        if (!supplier.length || !plan || ![amount isKindOfClass:NSNumber.class] || [amount doubleValue] <= 0) continue;
+        [prices addObject:@{@"supplier": supplier, @"plan": plan, @"amount": amount, @"currency": currency.length ? currency : @"CNY"}];
+    }
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([[defaults arrayForKey:SupplierPricesDefaultsKey] ?: @[] isEqualToArray:prices]) return;
+    [defaults setObject:prices forKey:SupplierPricesDefaultsKey];
+    NSUInteger updated = 0;
+    for (Account *account in self.store.accounts) if ([account applyListedPrice]) updated++;
+    if (updated) [self.store commit];
+    [NSNotificationCenter.defaultCenter postNotificationName:SupplierPricesDidChangeNotification object:nil];
+    self.pricesStatus.stringValue = updated ? [NSString stringWithFormat:@"已按价目表更新 %lu 个账号的月费", (unsigned long)updated]
+                                            : [NSString stringWithFormat:@"已保存 %lu 条价格", (unsigned long)prices.count];
 }
 
 /// Currencies in use plus those with a saved rate, CNY excluded.
@@ -789,6 +892,8 @@ static NSString *BackupTime(NSDate *date) {
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
     id field = notification.object;
     if ([self.rateFields.allValues containsObject:field]) { [self saveRateField:field]; return; }
+    for (NSDictionary *controls in self.priceRows)
+        if ([controls.allValues containsObject:field]) { [self savePriceList]; return; }
     if (field == self.authField) [self saveAuthorizationURL];
     else if (field == self.authNameField)
         [NSUserDefaults.standardUserDefaults setObject:[self.authNameField.stringValue

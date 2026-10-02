@@ -141,9 +141,11 @@
     NSButton *open = DeskButton(@"打开", @"globe", self, @selector(openAccount:));
     NSButton *authorize = DeskButton(@"授权", @"person.badge.key", self, @selector(authorize:));
     authorize.toolTip = @"用此账号授权第三方应用登录（打开对方提供的授权链接）";
+    NSButton *record = DeskButton(@"记账", @"plus.circle", self, @selector(recordPayment:));
+    record.toolTip = @"记一笔付款（金额按价目表或月费预填）";
     self.refreshButton = DeskButton(@"刷新", @"arrow.clockwise", self, @selector(refresh:));
     self.refreshButton.toolTip = @"刷新用量与订阅";
-    for (NSButton *button in @[open, authorize, self.refreshButton]) button.controlSize = NSControlSizeSmall;
+    for (NSButton *button in @[open, authorize, record, self.refreshButton]) button.controlSize = NSControlSizeSmall;
     self.spinner = [NSProgressIndicator new];
     self.spinner.style = NSProgressIndicatorStyleSpinning;
     self.spinner.controlSize = NSControlSizeSmall;
@@ -155,7 +157,7 @@
     [self.updatedLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     for (NSView *view in @[self.avatar, self.nameLabel, self.detailLabel, self.planPill, more, self.tagsView, self.statusBadge, self.shortRow,
-                           self.longRow, self.usageNote, separator, self.renewalLabel, self.priceLabel, open, authorize,
+                           self.longRow, self.usageNote, separator, self.renewalLabel, self.priceLabel, open, authorize, record,
                            self.refreshButton, self.spinner, self.updatedLabel]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [card addSubview:view];
@@ -207,7 +209,9 @@
         [open.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:inset - 2],
         [authorize.leadingAnchor constraintEqualToAnchor:open.trailingAnchor constant:6],
         [authorize.centerYAnchor constraintEqualToAnchor:open.centerYAnchor],
-        [self.refreshButton.leadingAnchor constraintEqualToAnchor:authorize.trailingAnchor constant:6],
+        [record.leadingAnchor constraintEqualToAnchor:authorize.trailingAnchor constant:6],
+        [record.centerYAnchor constraintEqualToAnchor:open.centerYAnchor],
+        [self.refreshButton.leadingAnchor constraintEqualToAnchor:record.trailingAnchor constant:6],
         [self.refreshButton.centerYAnchor constraintEqualToAnchor:open.centerYAnchor],
         [self.spinner.leadingAnchor constraintEqualToAnchor:self.refreshButton.trailingAnchor constant:6],
         [self.spinner.centerYAnchor constraintEqualToAnchor:open.centerYAnchor],
@@ -287,6 +291,11 @@
 - (void)openAccount:(id)sender { if (self.accountID) [self.coordinator openAccountID:self.accountID]; }
 - (void)authorize:(id)sender { if (self.accountID) [self.coordinator promptAuthorizationForAccountID:self.accountID]; }
 - (void)refresh:(id)sender { if (self.accountID) [self.coordinator refreshUsageForAccountIDs:@[self.accountID]]; }
+- (void)recordPayment:(id)sender {
+    if (!self.accountID) return;
+    Account *account = [self.coordinator.store accountWithID:self.accountID];
+    [self.coordinator promptPaymentForAccountID:self.accountID date:AccountUnrecordedRenewal(account, NSDate.date)];
+}
 
 - (void)showMore:(NSButton *)sender {
     if (!self.accountID) return;

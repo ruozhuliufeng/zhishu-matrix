@@ -3,6 +3,7 @@
 #import "AccountCardItem.h"
 #import "AccountInsights.h"
 #import "DeskUI.h"
+#import "ExpenseReportView.h"
 #import "ManagementScope.h"
 #import "RenewalCalendarView.h"
 
@@ -18,6 +19,7 @@ typedef NS_ENUM(NSInteger, ManagementView) {
     ManagementViewCards = 0,
     ManagementViewList,
     ManagementViewCalendar,
+    ManagementViewExpenses,
 };
 
 static NSString *const ViewModeDefaultsKey = @"managementViewMode";
@@ -271,6 +273,7 @@ static NSArray<NSArray *> *SortChoices(void) {
 @property (nonatomic, strong) NSScrollView *tableScroll;
 @property (nonatomic, strong) DeskTableView *tableView;
 @property (nonatomic, strong) RenewalCalendarView *calendarView;
+@property (nonatomic, strong) ExpenseReportView *reportView;
 @property (nonatomic, strong) NSTextField *emptyLabel;
 @property (nonatomic, strong) NSTextField *footerLabel;
 @property (nonatomic, strong) NSArray<NSButton *> *batchButtons;
@@ -291,7 +294,7 @@ static NSArray<NSArray *> *SortChoices(void) {
         _selection = @[];
         _scope = ManagementScope.all;
         NSInteger saved = [NSUserDefaults.standardUserDefaults integerForKey:ViewModeDefaultsKey];
-        _viewMode = saved >= ManagementViewCards && saved <= ManagementViewCalendar ? saved : ManagementViewCards;
+        _viewMode = saved >= ManagementViewCards && saved <= ManagementViewExpenses ? saved : ManagementViewCards;
     }
     return self;
 }
@@ -405,11 +408,13 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.viewSwitch = [NSSegmentedControl segmentedControlWithImages:@[
             [NSImage imageWithSystemSymbolName:@"square.grid.2x2" accessibilityDescription:@"卡片"],
             [NSImage imageWithSystemSymbolName:@"list.bullet" accessibilityDescription:@"列表"],
-            [NSImage imageWithSystemSymbolName:@"calendar" accessibilityDescription:@"日历"]]
+            [NSImage imageWithSystemSymbolName:@"calendar" accessibilityDescription:@"日历"],
+            [NSImage imageWithSystemSymbolName:@"chart.bar.xaxis" accessibilityDescription:@"费用"]]
         trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(viewSwitched:)];
     [self.viewSwitch setToolTip:@"卡片" forSegment:0];
     [self.viewSwitch setToolTip:@"列表" forSegment:1];
     [self.viewSwitch setToolTip:@"续费日历" forSegment:2];
+    [self.viewSwitch setToolTip:@"费用报表：按月实付、按供应商与付款来源汇总、本月核对" forSegment:3];
     self.viewSwitch.selectedSegment = self.viewMode;
     NSPopUpButton *more = [self moreMenuButton];
     NSButton *add = DeskButton(@"添加账号", @"plus", self.coordinator, @selector(addAccount:));
@@ -553,13 +558,19 @@ static NSArray<NSArray *> *SortChoices(void) {
     [self buildCollection];
     [self buildTable];
     [self buildCalendar];
+    self.reportView = [ExpenseReportView new];
+    __weak typeof(self) weakReport = self;
+    self.reportView.recordPayment = ^(NSString *identifier, NSString *date) {
+        [weakReport.coordinator promptPaymentForAccountID:identifier date:date];
+    };
+    self.reportView.selectAccount = ^(NSString *identifier) { [weakReport userChangedSelection:@[identifier]]; };
     NSBox *topLine = DeskSeparator();
     NSBox *bottomLine = DeskSeparator();
     NSView *footer = [self buildFooter];
     self.emptyLabel = DeskLabel(@"", 13, NSFontWeightRegular);
     self.emptyLabel.textColor = NSColor.secondaryLabelColor;
 
-    NSArray *contents = @[self.cardsScroll, self.tableScroll, self.calendarView];
+    NSArray *contents = @[self.cardsScroll, self.tableScroll, self.calendarView, self.reportView];
     for (NSView *view in [@[summary, controls, topLine, bottomLine, footer] arrayByAddingObjectsFromArray:contents]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:view];
@@ -698,13 +709,13 @@ static NSArray<NSArray *> *SortChoices(void) {
         [amounts addObject:AccountFormatMoney(spend[currency], currency)];
     NSArray<NSString *> *missing = nil;
     double monthly = [store monthlySpendInCNYWithRates:AccountExchangeRates() missingCurrencies:&missing];
-    self.spendChip.text = !amounts.count ? @"续费日历"
+    self.spendChip.text = !amounts.count ? @"费用报表"
         : [NSString stringWithFormat:@"%@/月%@", AccountFormatCNY(@(monthly)), missing.count ? @" + 未换算" : @""];
     self.spendChip.toolTip = amounts.count
-        ? [NSString stringWithFormat:@"每月支出（折合人民币）：%@\n原币：%@%@\n点击查看续费日历", AccountFormatCNY(@(monthly)),
+        ? [NSString stringWithFormat:@"每月支出（折合人民币）：%@\n原币：%@%@\n点击查看费用报表", AccountFormatCNY(@(monthly)),
             [amounts componentsJoinedByString:@" + "],
             missing.count ? [NSString stringWithFormat:@"\n%@ 未设汇率，未计入；可在“设置 → 费用”中填写", [missing componentsJoinedByString:@"、"]] : @""]
-        : @"查看续费日历";
+        : @"查看费用报表";
     [self updateChipHighlights];
 
     self.rows = [self sortedAccounts:visible];
@@ -718,11 +729,13 @@ static NSArray<NSArray *> *SortChoices(void) {
     [self.tableView reloadData];
     [self.collectionView reloadData];
     self.calendarView.accounts = self.rows;
+    self.reportView.supplierOrder = store.suppliers;
+    if (self.viewMode == ManagementViewExpenses) self.reportView.accounts = self.rows;
     self.applyingSelection = NO;
     [self applySelectionToViews];
 
     BOOL plainFilters = !self.searchField.stringValue.length && self.planFilter.selectedItem.tag == PlanFilterAll;
-    self.emptyLabel.hidden = self.rows.count > 0 || self.viewMode == ManagementViewCalendar;
+    self.emptyLabel.hidden = self.rows.count > 0 || self.viewMode == ManagementViewCalendar || self.viewMode == ManagementViewExpenses;
     self.emptyLabel.stringValue = !accounts.count ? @"还没有账号，点击右上角“添加账号”开始"
         : (plainFilters ? [NSString stringWithFormat:@"“%@”中没有账号", self.scope.title] : @"没有符合筛选条件的账号");
     [self updateFooter];
@@ -732,7 +745,7 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.quotaChip.active = self.scope.kind == ManagementScopeQuotaLow;
     self.expiryChip.active = self.scope.kind == ManagementScopeExpiring;
     self.incompleteChip.active = self.scope.kind == ManagementScopeIncomplete;
-    self.spendChip.active = self.viewMode == ManagementViewCalendar;
+    self.spendChip.active = self.viewMode == ManagementViewExpenses;
 }
 
 - (void)updateFooter {
@@ -801,13 +814,13 @@ static NSArray<NSArray *> *SortChoices(void) {
 
 - (void)chipClicked:(ManagementChip *)chip {
     if (chip == self.spendChip) {
-        [self switchToView:self.viewMode == ManagementViewCalendar ? ManagementViewCards : ManagementViewCalendar];
+        [self switchToView:self.viewMode == ManagementViewExpenses ? ManagementViewCards : ManagementViewExpenses];
         return;
     }
     ManagementScopeKind kind = chip == self.quotaChip ? ManagementScopeQuotaLow
         : (chip == self.incompleteChip ? ManagementScopeIncomplete : ManagementScopeExpiring);
     ManagementScope *scope = self.scope.kind == kind ? ManagementScope.all : [ManagementScope scopeWithKind:kind value:nil];
-    if (self.viewMode == ManagementViewCalendar) [self switchToView:ManagementViewCards];
+    if (self.viewMode == ManagementViewCalendar || self.viewMode == ManagementViewExpenses) [self switchToView:ManagementViewCards];
     self.scope = scope;
     if (self.scopeChosen) self.scopeChosen(scope);
 }
@@ -843,7 +856,8 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.cardsScroll.hidden = self.viewMode != ManagementViewCards;
     self.tableScroll.hidden = self.viewMode != ManagementViewList;
     self.calendarView.hidden = self.viewMode != ManagementViewCalendar;
-    self.sortPopUp.enabled = self.viewMode != ManagementViewCalendar;
+    self.reportView.hidden = self.viewMode != ManagementViewExpenses;
+    self.sortPopUp.enabled = self.viewMode != ManagementViewCalendar && self.viewMode != ManagementViewExpenses;
     [self syncSortPopUp];
     [self updateChipHighlights];
     if (self.viewMode == ManagementViewList && !self.fittedColumns) [self.view setNeedsLayout:YES];

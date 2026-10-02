@@ -20,6 +20,8 @@ typedef NS_ENUM(NSInteger, StatusItemCommand) {
 /// Menu bar item: accounts that need attention, charges and expiries in the next 30 days, spend in CNY and quick actions.
 @interface StatusItemController : NSObject
 @property (nonatomic, copy, nullable) void (^openAccount)(NSString *identifier);
+/// Opens the payment form for an account, dated `date` ("yyyy-MM-dd").
+@property (nonatomic, copy, nullable) void (^recordPayment)(NSString *identifier, NSString *date);
 @property (nonatomic, copy, nullable) void (^perform)(StatusItemCommand command);
 @property (nonatomic, copy, nullable) BOOL (^isRefreshing)(void);
 @property (nonatomic, copy, nullable) BOOL (^isLocked)(void);

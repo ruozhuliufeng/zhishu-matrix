@@ -7,6 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// NSUserDefaults key: release background account pages unused for this many minutes (0 = never).
 extern NSString *const ReleaseIdlePagesMinutesDefaultsKey;
+/// NSUserDefaults key: 0 opens the management view at launch (default), 1 the view used last.
+extern NSString *const LaunchViewDefaultsKey;
 
 @interface MainWindowController : NSWindowController <AccountCoordinator>
 @property (nonatomic, readonly) AccountRefresher *refresher;
@@ -42,6 +44,7 @@ extern NSString *const ReleaseIdlePagesMinutesDefaultsKey;
 - (IBAction)readBillingForSelected:(nullable id)sender;
 - (IBAction)openBillingPageForSelected:(nullable id)sender;
 - (IBAction)setPaymentInfoForSelected:(nullable id)sender;
+- (IBAction)recordPaymentForSelected:(nullable id)sender;
 @end
 
 NS_ASSUME_NONNULL_END

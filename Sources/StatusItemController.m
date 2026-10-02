@@ -134,6 +134,31 @@ static NSString *QuotaSummary(Account *account) {
         [self addAccountItem:account text:account.name detail:status.title color:ToneColor(status.tone) dot:ToneColor(status.tone) to:menu];
     }
 
+    // Renewals that went through without a payment being recorded.
+    NSMutableArray<NSArray *> *unrecorded = [NSMutableArray array];
+    for (Account *account in accounts) {
+        NSString *date = AccountUnrecordedRenewal(account, now);
+        if (date) [unrecorded addObject:@[account, date]];
+    }
+    [unrecorded sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [a[1] compare:b[1]]; }];
+    if (unrecorded.count) {
+        [menu addItem:[NSMenuItem separatorItem]];
+        [self addHeader:[NSString stringWithFormat:@"待记账（%lu）· 点击记一笔", (unsigned long)unrecorded.count] to:menu];
+        NSDateFormatter *dayFormat = [NSDateFormatter new];
+        dayFormat.dateFormat = @"M月d日";
+        for (NSArray *entry in unrecorded) {
+            Account *account = entry[0];
+            NSDictionary *charge = account.expectedCharge;
+            NSNumber *cny = AccountAmountInCNY(charge[@"amount"], charge[@"currency"], rates);
+            NSString *amount = cny ? AccountFormatCNY(cny) : (charge ? AccountFormatMoney(charge[@"amount"], charge[@"currency"]) : @"");
+            NSString *text = [NSString stringWithFormat:@"%@　%@", [dayFormat stringFromDate:AccountDateFromDayString(entry[1])], account.name];
+            NSMenuItem *item = [self addAccountItem:account text:text detail:amount color:NSColor.secondaryLabelColor
+                dot:NSColor.systemBrownColor to:menu];
+            item.action = @selector(recordPaymentItem:);
+            item.representedObject = @[account.identifier, entry[1]];
+        }
+    }
+
     // Charges and expiries in the next 30 days.
     NSMutableArray<Account *> *upcoming = [NSMutableArray array];
     for (Account *account in accounts) {
@@ -150,9 +175,10 @@ static NSString *QuotaSummary(Account *account) {
         NSString *detail = @"到期";
         NSColor *color = NSColor.systemOrangeColor;
         if (account.autoRenew.boolValue) {
-            NSNumber *cny = AccountAmountInCNY(account.monthlyPrice, account.currency, rates);
+            NSDictionary *charge = account.expectedCharge;
+            NSNumber *cny = AccountAmountInCNY(charge[@"amount"], charge[@"currency"], rates);
             detail = cny ? [@"扣款 " stringByAppendingString:AccountFormatCNY(cny)]
-                : (account.monthlyPrice ? [@"扣款 " stringByAppendingString:AccountFormatMoney(account.monthlyPrice, account.currency)] : @"自动续费");
+                : (charge ? [@"扣款 " stringByAppendingString:AccountFormatMoney(charge[@"amount"], charge[@"currency"])] : @"自动续费");
             color = NSColor.secondaryLabelColor;
         }
         [self addAccountItem:account text:[NSString stringWithFormat:@"%@　%@", [day stringFromDate:date], account.name]
@@ -197,7 +223,7 @@ static NSString *QuotaSummary(Account *account) {
     header.enabled = NO;
 }
 
-- (void)addAccountItem:(Account *)account text:(NSString *)text detail:(NSString *)detail color:(NSColor *)color
+- (NSMenuItem *)addAccountItem:(Account *)account text:(NSString *)text detail:(NSString *)detail color:(NSColor *)color
     dot:(NSColor *)dot to:(NSMenu *)menu {
     NSMenuItem *item = [self addTitle:text action:@selector(openAccountItem:) tag:0 to:menu];
     item.attributedTitle = [self titleWithText:text detail:detail color:color];
@@ -206,6 +232,12 @@ static NSString *QuotaSummary(Account *account) {
     NSString *payment = account.paymentSummary;
     item.toolTip = [NSString stringWithFormat:@"%@ · %@%@", account.planTitle, [account expiryDescriptionFromDate:NSDate.date],
         payment.length ? [@" · " stringByAppendingString:payment] : @""];
+    return item;
+}
+
+- (void)recordPaymentItem:(NSMenuItem *)sender {
+    NSArray *entry = sender.representedObject;
+    if (self.recordPayment && entry.count == 2) self.recordPayment(entry[0], entry[1]);
 }
 
 - (void)openAccountItem:(NSMenuItem *)sender {

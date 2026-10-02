@@ -18,6 +18,7 @@
 #import "SubscriptionParser.h"
 
 NSString *const ReleaseIdlePagesMinutesDefaultsKey = @"releaseIdlePagesMinutes";
+NSString *const LaunchViewDefaultsKey = @"launchView";
 
 static NSToolbarItemIdentifier const ToolbarBack = @"back";
 static NSToolbarItemIdentifier const ToolbarForward = @"forward";
@@ -153,7 +154,9 @@ static BOOL IsChatGPTPage(NSURL *url) {
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         NSString *previous = [defaults stringForKey:SelectedAccountDefaultsKey];
         _selectedAccountID = [store accountWithID:previous] ? previous : store.accounts.firstObject.identifier;
-        _mode = [defaults integerForKey:ModeDefaultsKey] == DeskModeManagement ? DeskModeManagement : DeskModeBrowser;
+        // A ledger opens on the accounts; the ChatGPT pages are there for signing in, authorizing and billing.
+        BOOL resume = [defaults integerForKey:LaunchViewDefaultsKey] == 1;
+        _mode = !resume || [defaults integerForKey:ModeDefaultsKey] == DeskModeManagement ? DeskModeManagement : DeskModeBrowser;
         [self buildWindow];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(storeDidChange:)
             name:AccountStoreDidChangeNotification object:store];
@@ -620,12 +623,15 @@ static BOOL IsChatGPTPage(NSURL *url) {
         account.autoRenew = renewal[@"autoRenew"];
         changed = YES;
     }
-    if (price && (direct || !account.monthlyPrice) &&
+    if (price && direct && ![account.priceSource isEqualToString:@"manual"] &&
         (![account.monthlyPrice isEqual:price[@"amount"]] || ![account.currency isEqualToString:price[@"currency"]])) {
         account.monthlyPrice = price[@"amount"];
         account.currency = price[@"currency"];
+        account.priceSource = @"page";
         changed = YES;
     }
+    // What a reseller charges you comes from the price list, never from the ChatGPT page.
+    if (!direct && [account applyListedPrice]) changed = YES;
     if (supplier && direct) {
         account.supplier = supplier;
         changed = YES;
@@ -1435,6 +1441,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
     [menu addItem:supplierItem];
     [menu addItem:[self menuItem:accounts.count == 1 ? @"设置付款信息…" : @"批量设置付款信息…" symbol:@"creditcard.and.123"
         action:@selector(paymentInfoFromMenu:) object:ids]];
+    if (accounts.count == 1)
+        [menu addItem:[self menuItem:@"记一笔付款…" symbol:@"plus.circle" action:@selector(recordPaymentFromMenu:) object:ids]];
     [menu addItem:[self menuItem:accounts.count == 1 ? @"导出资料…" : @"导出所选资料…" symbol:@"square.and.arrow.up"
         action:@selector(exportFromMenu:) object:ids]];
     [menu addItem:[NSMenuItem separatorItem]];
@@ -1527,11 +1535,32 @@ static BOOL IsChatGPTPage(NSURL *url) {
         NSString *last4 = AccountCardLast4(card.stringValue);
         for (Account *account in accounts) {
             if (supplier.stringValue.length || accounts.count == 1) account.supplier = supplier.stringValue;
+            [account applyListedPrice];
             if (method.stringValue.length || accounts.count == 1) account.paymentMethod = method.stringValue;
             if (last4.length || (accounts.count == 1 && !card.stringValue.length)) account.cardLast4 = last4;
         }
         [weakSelf.store commit];
     }];
+}
+
+- (void)promptPaymentForAccountID:(NSString *)identifier date:(NSString *)date {
+    if (![self.store accountWithID:identifier] || self.locked) return;
+    [self selectAccountID:identifier];
+    if (self.inspectorItem.isCollapsed) self.inspectorItem.collapsed = NO;
+    [self.inspector showAccountID:identifier selectionCount:1];
+    [self.inspector presentAddPaymentWithDate:date];
+}
+
+- (void)recordPaymentFromMenu:(NSMenuItem *)sender {
+    NSString *identifier = [sender.representedObject firstObject];
+    Account *account = [self.store accountWithID:identifier];
+    [self promptPaymentForAccountID:identifier date:AccountUnrecordedRenewal(account, NSDate.date)];
+}
+
+- (void)recordPaymentForSelected:(id)sender {
+    NSArray<NSString *> *identifiers = [self targetAccountIDs];
+    if (identifiers.count != 1) return;
+    [self promptPaymentForAccountID:identifiers.firstObject date:AccountUnrecordedRenewal([self.store accountWithID:identifiers.firstObject], NSDate.date)];
 }
 
 - (void)assignSupplierFromMenu:(NSMenuItem *)sender {
@@ -1599,7 +1628,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
     if (action == @selector(selectPreviousAccount:) || action == @selector(selectNextAccount:))
         return self.sidebar.visibleAccountIDs.count > 1;
     if (action == @selector(renameSelectedAccount:) || action == @selector(openAuthorizationLink:) ||
-        action == @selector(openBillingPageForSelected:))
+        action == @selector(openBillingPageForSelected:) || action == @selector(recordPaymentForSelected:))
         return [self targetAccountIDs].count == 1;
     if (action == @selector(readBillingForSelected:) || action == @selector(setPaymentInfoForSelected:))
         return [self targetAccountIDs].count > 0;

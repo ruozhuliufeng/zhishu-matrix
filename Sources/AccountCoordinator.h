@@ -33,6 +33,8 @@ typedef NS_ENUM(NSInteger, DeskMode) {
 - (void)openBillingPageForAccountID:(NSString *)identifier;
 /// Usage history points {t, short, long} for trends.
 - (NSArray<NSDictionary *> *)usageHistoryForAccountID:(NSString *)identifier;
+/// Selects the account and opens the payment form, dated `date` ("yyyy-MM-dd") or today.
+- (void)promptPaymentForAccountID:(NSString *)identifier date:(nullable NSString *)date;
 /// Applies a changed per-account proxy to the account's pages.
 - (void)proxyDidChangeForAccountID:(NSString *)identifier;
 /// Reads usage limits and subscription renewal from ChatGPT for these accounts.

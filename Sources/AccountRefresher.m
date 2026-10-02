@@ -196,6 +196,7 @@ static NSString *FailureMessage(NSInteger status) {
         }
         if (subscription[@"autoRenew"]) account.autoRenew = subscription[@"autoRenew"];
     }
+    [account applyListedPrice];
     NSString *email = [result[@"email"] isKindOfClass:NSString.class] ? result[@"email"] : nil;
     if (email.length && !account.email.length) account.email = email;
     account.refreshError = IsSuccess(usageStatus) ? nil : FailureMessage(usageStatus);

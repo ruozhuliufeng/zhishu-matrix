@@ -81,6 +81,8 @@
 
     self.windowController.loginDataCleared = ^(NSArray<NSString *> *identifiers) { [weakSelf.alerts forgetSignInOfAccountIDs:identifiers]; };
     self.alerts.openAccount = ^(NSString *identifier) { [weakSelf openAccountID:identifier]; };
+    self.alerts.recordPayment = ^(NSString *identifier, NSString *date) { [weakSelf recordPaymentForAccountID:identifier date:date]; };
+    self.statusItem.recordPayment = ^(NSString *identifier, NSString *date) { [weakSelf recordPaymentForAccountID:identifier date:date]; };
     self.lock.lockStateChanged = ^(BOOL locked) { [weakSelf lockStateChanged:locked]; };
 
     self.statusItem.openAccount = ^(NSString *identifier) { [weakSelf openAccountID:identifier]; };
@@ -144,6 +146,15 @@
     }
     [self showMainWindow];
     [self.windowController openAccountID:identifier];
+}
+
+- (void)recordPaymentForAccountID:(NSString *)identifier date:(NSString *)date {
+    if (self.lock.isLocked) {
+        [self.lock showLockScreen];
+        return;
+    }
+    [self showMainWindow];
+    [self.windowController promptPaymentForAccountID:identifier date:date];
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
@@ -360,6 +371,7 @@
     [self add:@"移动到分组…" action:@selector(moveSelectedToGroup:) key:nil modifiers:0 to:account target:controller];
     [self add:@"添加标签…" action:@selector(addTagsToSelected:) key:nil modifiers:0 to:account target:controller];
     [self add:@"设置付款信息…" action:@selector(setPaymentInfoForSelected:) key:nil modifiers:0 to:account target:controller];
+    [self add:@"记一笔付款…" action:@selector(recordPaymentForSelected:) key:nil modifiers:0 to:account target:controller];
     [self add:@"清除登录数据…" action:@selector(clearSelectedLoginData:) key:nil modifiers:0 to:account target:controller];
     [self add:@"删除账号…" action:@selector(deleteSelectedAccounts:) key:nil modifiers:0 to:account target:controller];
 

@@ -12,6 +12,8 @@ extern NSNotificationName const AlertSettingsDidChangeNotification;
 /// Posts macOS notifications for low or recovered quota, upcoming renewals and lost sign-ins.
 @interface AccountAlerts : NSObject
 @property (nonatomic, copy, nullable) void (^openAccount)(NSString *identifier);
+/// Asks to record a payment for the account; `date` is "yyyy-MM-dd" or empty for today.
+@property (nonatomic, copy, nullable) void (^recordPayment)(NSString *identifier, NSString *date);
 - (instancetype)initWithStore:(AccountStore *)store;
 /// Asks for permission when any kind is enabled and checks the accounts once.
 - (void)start;
