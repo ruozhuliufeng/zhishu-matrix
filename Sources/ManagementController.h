@@ -16,6 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reflectSelection;
 - (void)focusSearch;
 - (void)focusTable;
+/// Switches to the expense report for every account.
+- (void)showExpenses;
 @end
 
 NS_ASSUME_NONNULL_END

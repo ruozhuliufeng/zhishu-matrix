@@ -82,6 +82,7 @@
     self.windowController.loginDataCleared = ^(NSArray<NSString *> *identifiers) { [weakSelf.alerts forgetSignInOfAccountIDs:identifiers]; };
     self.alerts.openAccount = ^(NSString *identifier) { [weakSelf openAccountID:identifier]; };
     self.alerts.recordPayment = ^(NSString *identifier, NSString *date) { [weakSelf recordPaymentForAccountID:identifier date:date]; };
+    self.alerts.openExpenses = ^{ [weakSelf openExpenseReport]; };
     self.statusItem.recordPayment = ^(NSString *identifier, NSString *date) { [weakSelf recordPaymentForAccountID:identifier date:date]; };
     self.lock.lockStateChanged = ^(BOOL locked) { [weakSelf lockStateChanged:locked]; };
 
@@ -146,6 +147,15 @@
     }
     [self showMainWindow];
     [self.windowController openAccountID:identifier];
+}
+
+- (void)openExpenseReport {
+    if (self.lock.isLocked) {
+        [self.lock showLockScreen];
+        return;
+    }
+    [self showMainWindow];
+    [self.windowController showExpenseReport:nil];
 }
 
 - (void)recordPaymentForAccountID:(NSString *)identifier date:(NSString *)date {

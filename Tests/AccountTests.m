@@ -623,7 +623,7 @@ static void TestPayments(void) {
     const unsigned char *bytes = data.bytes;
     NSString *csv = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     CHECK(data.length > 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF, "starts the CSV with a BOM for Excel");
-    CHECK([csv hasPrefix:@"日期,账号"] && [csv containsString:@"2026-10-25,美元号,,Plus,,,,100,USD,710.00,,手动"],
+    CHECK([csv hasPrefix:@"日期,类型,账号"] && [csv containsString:@"2026-10-25,付款,美元号,,Plus,,,,100,USD,710.00,,手动"],
         "exports payments as CSV with yuan amounts");
     [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
@@ -633,9 +633,17 @@ static void TestBillingPayments(void) {
         "2026年9月25日\nPHP 8,919.64\n已支付\n2026年8月25日\nPHP 8,919.64\n已支付\n2026年7月25日 PHP 8,919.64 失败\n"
         "2026年6月25日 ₱1,099.00 已退款";
     NSArray *payments = [SubscriptionParser paymentsFromBillingText:billing];
-    CHECK(payments.count == 2 && [payments[0][@"date"] isEqualToString:@"2026-09-25"] &&
-        [payments[0][@"amount"] isEqual:@8919.64] && [payments[0][@"currency"] isEqualToString:@"PHP"],
-        "reads paid charges from the payment history");
+    CHECK(payments.count == 5 && [payments[0][@"date"] isEqualToString:@"2026-09-25"] &&
+        [payments[0][@"amount"] isEqual:@8919.64] && [payments[0][@"currency"] isEqualToString:@"PHP"] &&
+        [payments[0][@"kind"] isEqualToString:@""], "reads paid charges from the payment history");
+    CHECK([payments[2][@"date"] isEqualToString:@"2026-07-25"] && [payments[2][@"kind"] isEqualToString:@"failed"],
+        "keeps failed charges as failed");
+    NSMutableSet *june = [NSMutableSet set];
+    for (NSDictionary *payment in payments)
+        if ([payment[@"date"] isEqualToString:@"2026-06-25"]) [june addObject:payment[@"kind"]];
+    CHECK([june isEqualToSet:([NSSet setWithObjects:@"", @"refund", nil])], "a refunded invoice is a payment and its refund");
+    CHECK([SubscriptionParser paymentsFromBillingText:@"交易记录\n2026年5月25日 $20.00 Pending\n2026年4月25日 $20.00 Void"].count == 0,
+        "pending and void invoices are not payments");
     CHECK([SubscriptionParser paymentsFromBillingText:@"您的套餐将在 2026年10月25日 自动续订 PHP 8,919.64"].count == 0,
         "the renewal sentence is not a payment");
     CHECK([[SubscriptionParser cardLast4FromBillingText:billing] isEqualToString:@"4242"], "reads the card's last digits");
@@ -1036,6 +1044,63 @@ static void TestLifecycleAndArchive(void) {
     CHECK([active.lifecycle isEqualToString:@"transferred"] && active.archived, "imports bring the lifecycle and archive");
 }
 
+static void TestRefundsAndBudget(void) {
+    NSDate *now = AccountDateFromDayString(@"2026-10-03");
+    Account *account = [[Account alloc] initWithDictionary:@{@"id": WorkID, @"name": @"退款号", @"email": @"r@example.com",
+        @"plan": @"Plus", @"expiresAt": @"2026-10-01", @"autoRenew": @YES, @"monthlyPrice": @158, @"currency": @"CNY",
+        @"supplier": @"iOS", @"paymentMethod": @"礼品卡 / 余额", @"createdAt": @"2026-08-01T00:00:00Z",
+        @"payments": @[@{@"date": @"2026-09-01", @"amount": @158, @"currency": @"CNY"},
+                       @{@"date": @"2026-09-05", @"amount": @58, @"currency": @"CNY", @"kind": @"refund"},
+                       @{@"date": @"2026-10-01", @"amount": @158, @"currency": @"CNY", @"kind": @"failed"},
+                       @{@"date": @"2026-10-02", @"amount": @20, @"currency": @"USD", @"kind": @"bogus"}]}];
+    AccountPayment *refund = nil, *failed = nil;
+    for (AccountPayment *payment in account.payments) {
+        if (payment.isRefund) refund = payment;
+        if (payment.isFailed) failed = payment;
+    }
+    CHECK(refund.sign == -1 && failed.sign == 0 && [refund.dictionaryRepresentation[@"kind"] isEqualToString:@"refund"],
+        "reads payment kinds");
+    CHECK([account.payments.firstObject.kind isEqualToString:@""] && account.payments.firstObject.isCharge, "unknown kinds are payments");
+    CHECK([account.lastPayment.date isEqualToString:@"2026-10-02"], "the last payment is the newest real payment");
+    CHECK([AccountPaymentKindTitle(@"failed") isEqualToString:@"扣款失败"] && [AccountPaymentKindTitle(nil) isEqualToString:@"付款"],
+        "titles payment kinds");
+
+    AccountPayment *sameRefund = [[AccountPayment alloc] initWithDictionary:@{@"date": @"2026-09-05", @"amount": @58,
+        @"currency": @"CNY", @"kind": @"refund"}];
+    AccountPayment *sameAsCharge = [[AccountPayment alloc] initWithDictionary:@{@"date": @"2026-09-05", @"amount": @58, @"currency": @"CNY"}];
+    NSArray *incoming = @[sameRefund, sameAsCharge];
+    CHECK([account addPayments:incoming] == 1, "a charge and a refund of the same amount are different records");
+
+    NSDictionary *rates = @{@"CNY": @1, @"USD": @7};
+    AccountExpenseReport *report = [AccountExpenseReport reportForAccounts:@[account] year:2026 rates:rates];
+    CHECK(fabs(report.total - (158 - 58 + 140 + 58)) < 0.001 && fabs(report.refundTotal - 58) < 0.001 && report.failedCount == 1 &&
+        report.count == 4, "refunds come off the total and failed charges count for nothing");
+    CHECK(fabs(report.monthTotals[8].doubleValue - (158 - 58 + 58)) < 0.001, "refunds come off their month");
+
+    Account *failing = [[Account alloc] initWithDictionary:@{@"id": HomeID, @"name": @"失败号", @"plan": @"Plus",
+        @"expiresAt": @"2026-10-01", @"autoRenew": @YES, @"monthlyPrice": @158, @"currency": @"CNY", @"createdAt": @"2026-08-01T00:00:00Z",
+        @"payments": @[@{@"date": @"2026-09-01", @"amount": @158, @"currency": @"CNY"},
+                       @{@"date": @"2026-10-01", @"amount": @158, @"currency": @"CNY", @"kind": @"failed"}]}];
+    CHECK([AccountUnrecordedRenewal(failing, now) isEqualToString:@"2026-10-01"], "a failed charge does not settle a renewal");
+    NSArray *rows = [AccountExpenseReport reconciliationForAccounts:@[failing] month:now now:now rates:rates];
+    CHECK(rows.count == 1 && [rows[0][@"state"] isEqualToString:@"failed"], "reconciliation shows failed charges");
+    NSArray *september = [AccountExpenseReport reconciliationForAccounts:@[account] month:AccountDateFromDayString(@"2026-09-10")
+        now:now rates:rates];
+    CHECK(september.count == 1 && [september[0][@"recorded"] doubleValue] == 158 && [september[0][@"state"] isEqualToString:@"recorded"],
+        "refunds are taken off what was recorded");
+
+    CHECK(fabs(AccountSpentInMonth(@[account, failing], now, rates) - 140) < 0.001, "this month's spending leaves out failed charges");
+    NSMutableDictionary *state = [NSMutableDictionary dictionary];
+    CHECK(AccountBudgetAlert(@[account], now, 200, rates, state) == nil, "no alert within the budget");
+    CHECK(AccountBudgetAlert(@[account], now, 0, rates, state) == nil, "no alert without a budget");
+    NSDictionary *alert = AccountBudgetAlert(@[account], now, 100, rates, state);
+    CHECK([alert[@"kind"] isEqualToString:@"budget"] && [alert[@"title"] isEqualToString:@"10 月支出已超出预算"] &&
+        [alert[@"body"] containsString:@"超出 ¥40.00"], "announces going over the budget");
+    CHECK(AccountBudgetAlert(@[account], now, 100, rates, state) == nil, "announces it once a month");
+    CHECK(AccountBudgetAlert(@[account], AccountDateFromDayString(@"2026-11-02"), 100, rates, state) == nil,
+        "a new month starts within the budget");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -1062,6 +1127,7 @@ int main(void) {
         TestExpenseReport();
         TestNetworkDiagnosis();
         TestLifecycleAndArchive();
+        TestRefundsAndBudget();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -39,6 +39,8 @@ static NSString *ShortYuan(double value) {
 @property (nonatomic, copy) NSArray<NSString *> *series;
 @property (nonatomic, copy) NSDictionary<NSString *, NSColor *> *colors;
 @property (nonatomic) NSInteger selectedMonth;
+/// Monthly budget in CNY drawn as a reference line; 0 for none.
+@property (nonatomic) double budget;
 @property (nonatomic, copy, nullable) void (^monthClicked)(NSInteger month);
 - (void)updateToolTips;
 @end
@@ -49,9 +51,16 @@ static NSString *ShortYuan(double value) {
 
 - (NSRect)plotRect { return NSMakeRect(58, 26, NSWidth(self.bounds) - 58 - 12, NSHeight(self.bounds) - 26 - 22); }
 
+/// Height of a month's stack: refunds come off the total but a supplier's segment never drops below zero.
+- (double)stackTotalForMonth:(NSInteger)month {
+    double total = 0;
+    for (NSNumber *value in self.report.monthSupplierTotals[month].allValues) total += MAX(0, value.doubleValue);
+    return total;
+}
+
 - (double)scaleMax {
-    double maximum = 0;
-    for (NSNumber *total in self.report.monthTotals) maximum = MAX(maximum, total.doubleValue);
+    double maximum = self.budget;
+    for (NSInteger month = 0; month < 12; month++) maximum = MAX(maximum, [self stackTotalForMonth:month]);
     if (maximum <= 0) return 100;
     double magnitude = pow(10, floor(log10(maximum)));
     for (NSNumber *step in @[@1, @2, @2.5, @5, @10])
@@ -118,7 +127,7 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
 
         NSDictionary<NSString *, NSNumber *> *totals = self.report.monthSupplierTotals[month];
         double total = self.report.monthTotals[month].doubleValue;
-        if (total <= 0) continue;
+        if ([self stackTotalForMonth:month] <= 0) continue;
         CGFloat width = MIN(28, NSWidth(column) * 0.56);
         CGFloat x = NSMidX(column) - width / 2;
         __block CGFloat y = NSMinY(plot);
@@ -147,10 +156,29 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
             NSString *value = AccountFormatCNY(@(total));
             NSDictionary *labelAttributes = [self textAttributes:NSColor.labelColor size:10.5 weight:NSFontWeightSemibold];
             NSSize labelSize = [value sizeWithAttributes:labelAttributes];
-            CGFloat top = NSMinY(plot) + NSHeight(plot) * total / maximum + 4;
+            CGFloat top = NSMinY(plot) + NSHeight(plot) * [self stackTotalForMonth:month] / maximum + 4;
             CGFloat left = MIN(MAX(NSMidX(column) - labelSize.width / 2, NSMinX(plot)), NSMaxX(plot) - labelSize.width);
             [value drawAtPoint:NSMakePoint(left, MIN(top, NSMaxY(self.bounds) - labelSize.height)) withAttributes:labelAttributes];
         }
+    }
+    if (self.budget > 0) {
+        // A dashed reference line, labelled at the right end, in text ink rather than a series color.
+        CGFloat y = round(NSMinY(plot) + NSHeight(plot) * self.budget / maximum) + 0.5;
+        NSBezierPath *line = [NSBezierPath bezierPath];
+        [line moveToPoint:NSMakePoint(NSMinX(plot), y)];
+        [line lineToPoint:NSMakePoint(NSMaxX(plot), y)];
+        line.lineWidth = 1;
+        CGFloat dash[] = {4, 3};
+        [line setLineDash:dash count:2 phase:0];
+        [NSColor.secondaryLabelColor setStroke];
+        [line stroke];
+        NSString *label = [@"预算 " stringByAppendingString:ShortYuan(self.budget)];
+        NSDictionary *attributes = [self textAttributes:NSColor.secondaryLabelColor size:10 weight:NSFontWeightMedium];
+        NSSize size = [label sizeWithAttributes:attributes];
+        NSRect back = NSMakeRect(NSMaxX(plot) - size.width - 6, y + 2, size.width + 6, size.height);
+        [NSColor.controlBackgroundColor setFill];
+        NSRectFill(back);
+        [label drawAtPoint:NSMakePoint(NSMinX(back) + 3, NSMinY(back)) withAttributes:attributes];
     }
     if (self.report.count == 0) {
         NSString *empty = @"这一年还没有付款记录";
@@ -175,7 +203,9 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
     if (!self.report || month < 0 || month > 11) return @"";
     double total = self.report.monthTotals[month].doubleValue;
     NSMutableArray *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:@"%ld 年 %ld 月：%@", (long)self.report.year,
-        (long)month + 1, total > 0 ? AccountFormatCNY(@(total)) : @"无付款"]];
+        (long)month + 1, total != 0 || [self stackTotalForMonth:month] > 0 ? AccountFormatCNY(@(total)) : @"无付款"]];
+    if (self.budget > 0 && total > self.budget)
+        [lines addObject:[@"超出预算 " stringByAppendingString:AccountFormatCNY(@(total - self.budget))]];
     NSDictionary<NSString *, NSNumber *> *totals = self.report.monthSupplierTotals[month];
     for (NSString *supplier in [totals keysSortedByValueUsingSelector:@selector(compare:)].reverseObjectEnumerator)
         [lines addObject:[NSString stringWithFormat:@"%@　%@", supplier, AccountFormatCNY(totals[supplier])]];
@@ -407,19 +437,35 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
     NSDictionary *rates = AccountExchangeRates();
     self.report = [AccountExpenseReport reportForAccounts:self.accounts year:self.year rates:rates];
     self.yearLabel.stringValue = [NSString stringWithFormat:@"%ld 年", (long)self.year];
+    // Most important first: the label truncates at the end when the window is narrow.
     NSMutableArray *summary = [NSMutableArray array];
-    if (self.report.count) {
-        NSInteger months = 0;
-        for (NSNumber *total in self.report.monthTotals) if (total.doubleValue > 0) months++;
-        [summary addObject:[NSString stringWithFormat:@"实付 %@", AccountFormatCNY(@(self.report.total))]];
-        [summary addObject:[NSString stringWithFormat:@"%lu 笔", (unsigned long)self.report.count]];
-        if (months) [summary addObject:[NSString stringWithFormat:@"有付款的月份平均 %@", AccountFormatCNY(@(self.report.total / months))]];
-    } else {
-        [summary addObject:@"没有付款记录"];
+    [summary addObject:self.report.count ? [NSString stringWithFormat:@"实付 %@", AccountFormatCNY(@(self.report.total))] : @"没有付款记录"];
+    double budget = AccountMonthlyBudget();
+    NSDateComponents *today = [NSCalendar.currentCalendar components:NSCalendarUnitYear | NSCalendarUnitMonth fromDate:NSDate.date];
+    if (budget > 0 && self.year == today.year) {
+        double spent = self.report.monthTotals[(NSUInteger)today.month - 1].doubleValue;
+        [summary addObject:spent > budget
+            ? [NSString stringWithFormat:@"本月 %@，超出预算 %@", AccountFormatCNY(@(spent)), AccountFormatCNY(@(spent - budget))]
+            : [NSString stringWithFormat:@"本月 %@ / 预算 %@", AccountFormatCNY(@(spent)), AccountFormatCNY(@(budget))]];
+    } else if (budget > 0) {
+        NSUInteger over = 0;
+        for (NSNumber *total in self.report.monthTotals) if (total.doubleValue > budget) over++;
+        [summary addObject:over ? [NSString stringWithFormat:@"%lu 个月超出预算", (unsigned long)over] : @"每月都在预算内"];
     }
     if (self.report.missingCurrencies.count)
         [summary addObject:[NSString stringWithFormat:@"%@ 未设汇率，未计入", [self.report.missingCurrencies componentsJoinedByString:@"、"]]];
+    if (self.report.refundTotal > 0)
+        [summary addObject:[NSString stringWithFormat:@"已扣除退款 %@", AccountFormatCNY(@(self.report.refundTotal))]];
+    if (self.report.failedCount)
+        [summary addObject:[NSString stringWithFormat:@"扣款失败 %lu 次", (unsigned long)self.report.failedCount]];
+    if (self.report.count) {
+        NSInteger months = 0;
+        for (NSNumber *total in self.report.monthTotals) if (total.doubleValue > 0) months++;
+        [summary addObject:[NSString stringWithFormat:@"%lu 笔", (unsigned long)self.report.count]];
+        if (months) [summary addObject:[NSString stringWithFormat:@"月均 %@", AccountFormatCNY(@(self.report.total / months))]];
+    }
     self.summaryLabel.stringValue = [summary componentsJoinedByString:@" · "];
+    self.summaryLabel.toolTip = [summary componentsJoinedByString:@"\n"];
 
     // Colors follow the supplier: its place in the fixed order picks the slot.
     NSMutableArray<NSString *> *series = [NSMutableArray array];
@@ -441,6 +487,7 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
         colors[OtherSupplier] = SlotColor(99);
     }
     self.chart.report = self.report;
+    self.chart.budget = budget;
     self.chart.series = series;
     self.chart.colors = colors;
     self.chart.selectedMonth = self.month;
@@ -468,13 +515,15 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
     NSDate *monthDay = [NSCalendar.currentCalendar dateWithEra:1 year:self.year month:self.month + 1 day:1 hour:12 minute:0 second:0 nanosecond:0];
     self.reconciliation = [AccountExpenseReport reconciliationForAccounts:self.accounts month:monthDay now:NSDate.date rates:rates];
     self.checkTitle.stringValue = [NSString stringWithFormat:@"%ld 年 %ld 月核对", (long)self.year, (long)self.month + 1];
-    NSUInteger missing = 0, different = 0, upcoming = 0;
+    NSUInteger missing = 0, different = 0, upcoming = 0, failed = 0;
     for (NSDictionary *row in self.reconciliation) {
+        if ([row[@"state"] isEqualToString:@"failed"]) failed++;
         if ([row[@"state"] isEqualToString:@"missing"]) missing++;
         if ([row[@"state"] isEqualToString:@"different"]) different++;
         if ([row[@"state"] isEqualToString:@"upcoming"]) upcoming++;
     }
     NSMutableArray *check = [NSMutableArray array];
+    if (failed) [check addObject:[NSString stringWithFormat:@"%lu 笔扣款失败", (unsigned long)failed]];
     if (missing) [check addObject:[NSString stringWithFormat:@"%lu 笔未记", (unsigned long)missing]];
     if (different) [check addObject:[NSString stringWithFormat:@"%lu 笔金额不同", (unsigned long)different]];
     if (upcoming) [check addObject:[NSString stringWithFormat:@"%lu 笔待扣款", (unsigned long)upcoming]];
@@ -523,7 +572,7 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
         label.alignment = NSTextAlignmentRight;
     } else if ([key isEqualToString:@"recorded"]) {
         double recorded = [item[@"recorded"] doubleValue];
-        label.stringValue = recorded > 0 ? AccountFormatCNY(item[@"recorded"]) : @"—";
+        label.stringValue = recorded != 0 ? AccountFormatCNY(item[@"recorded"]) : @"—";
         label.alignment = NSTextAlignmentRight;
     } else if ([key isEqualToString:@"state"]) {
         // Status colors always come with an icon and a word.
@@ -531,6 +580,7 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
             @"recorded": @[@"已记", @"checkmark.circle.fill", NSColor.systemGreenColor],
             @"different": @[@"金额不同", @"exclamationmark.circle.fill", NSColor.systemOrangeColor],
             @"missing": @[@"未记", @"xmark.circle.fill", NSColor.systemRedColor],
+            @"failed": @[@"扣款失败", @"exclamationmark.triangle.fill", NSColor.systemRedColor],
             @"upcoming": @[@"待扣款", @"clock", NSColor.secondaryLabelColor],
             @"extra": @[@"计划外付款", @"plus.circle", NSColor.secondaryLabelColor]};
         NSArray *state = states[item[@"state"]] ?: states[@"extra"];
@@ -554,7 +604,8 @@ static NSBezierPath *SegmentPath(NSRect rect, CGFloat radius) {
     if (row < 0 || row >= (NSInteger)self.reconciliation.count) return;
     NSDictionary *item = self.reconciliation[(NSUInteger)row];
     NSString *state = item[@"state"];
-    if (([state isEqualToString:@"missing"] || [state isEqualToString:@"upcoming"]) && self.recordPayment)
+    if (([state isEqualToString:@"missing"] || [state isEqualToString:@"upcoming"] || [state isEqualToString:@"failed"]) &&
+        self.recordPayment)
         self.recordPayment(item[@"accountID"], item[@"date"]);
     else if (self.selectAccount)
         self.selectAccount(item[@"accountID"]);

@@ -117,6 +117,8 @@ static NSArray<NSArray *> *SortChoices(void) {
     [self setNeedsDisplay:YES];
 }
 - (void)setActive:(BOOL)active { _active = active; [self setNeedsDisplay:YES]; }
+- (void)setTint:(NSColor *)tint { _tint = tint; [self setNeedsDisplay:YES]; }
+- (void)setSymbol:(NSString *)symbol { _symbol = [symbol copy]; [self setNeedsDisplay:YES]; }
 - (NSSize)intrinsicContentSize {
     NSSize size = [self.text sizeWithAttributes:@{NSFontAttributeName: self.font}];
     return NSMakeSize(ceil(size.width) + 36, 24);
@@ -724,14 +726,30 @@ static NSArray<NSArray *> *SortChoices(void) {
     for (NSString *currency in [spend.allKeys sortedArrayUsingSelector:@selector(compare:)])
         [amounts addObject:AccountFormatMoney(spend[currency], currency)];
     NSArray<NSString *> *missing = nil;
-    double monthly = [store monthlySpendInCNYWithRates:AccountExchangeRates() missingCurrencies:&missing];
-    self.spendChip.text = !amounts.count ? @"费用报表"
-        : [NSString stringWithFormat:@"%@/月%@", AccountFormatCNY(@(monthly)), missing.count ? @" + 未换算" : @""];
-    self.spendChip.toolTip = amounts.count
-        ? [NSString stringWithFormat:@"每月支出（折合人民币）：%@\n原币：%@%@\n点击查看费用报表", AccountFormatCNY(@(monthly)),
-            [amounts componentsJoinedByString:@" + "],
-            missing.count ? [NSString stringWithFormat:@"\n%@ 未设汇率，未计入；可在“设置 → 费用”中填写", [missing componentsJoinedByString:@"、"]] : @""]
-        : @"查看费用报表";
+    NSDictionary *rates = AccountExchangeRates();
+    double monthly = [store monthlySpendInCNYWithRates:rates missingCurrencies:&missing];
+    double budget = AccountMonthlyBudget();
+    double spent = budget > 0 ? AccountSpentInMonth(store.accounts, now, rates) : 0;
+    BOOL overBudget = budget > 0 && (spent > budget || monthly > budget);
+    self.spendChip.text = !amounts.count ? (overBudget ? @"本月超预算" : @"费用报表")
+        : [NSString stringWithFormat:@"%@/月%@%@", AccountFormatCNY(@(monthly)), missing.count ? @" + 未换算" : @"",
+            overBudget ? @" · 超预算" : @""];
+    self.spendChip.tint = overBudget ? NSColor.systemOrangeColor : NSColor.systemPurpleColor;
+    self.spendChip.symbol = overBudget ? @"exclamationmark.triangle" : @"creditcard";
+    NSMutableArray<NSString *> *tip = [NSMutableArray array];
+    if (amounts.count) {
+        [tip addObject:[NSString stringWithFormat:@"每月支出（按月费折合人民币）：%@", AccountFormatCNY(@(monthly))]];
+        [tip addObject:[@"原币：" stringByAppendingString:[amounts componentsJoinedByString:@" + "]]];
+        if (missing.count)
+            [tip addObject:[NSString stringWithFormat:@"%@ 未设汇率，未计入；可在“设置 → 费用”中填写", [missing componentsJoinedByString:@"、"]]];
+    }
+    if (budget > 0) {
+        [tip addObject:[NSString stringWithFormat:@"每月预算 %@，本月已付 %@", AccountFormatCNY(@(budget)), AccountFormatCNY(@(spent))]];
+        if (spent > budget) [tip addObject:[@"本月已超出预算 " stringByAppendingString:AccountFormatCNY(@(spent - budget))]];
+        else if (monthly > budget) [tip addObject:[@"按月费预计每月超出预算 " stringByAppendingString:AccountFormatCNY(@(monthly - budget))]];
+    }
+    [tip addObject:@"点击查看费用报表"];
+    self.spendChip.toolTip = [tip componentsJoinedByString:@"\n"];
     [self updateChipHighlights];
 
     self.rows = [self sortedAccounts:visible];
@@ -859,6 +877,14 @@ static NSArray<NSArray *> *SortChoices(void) {
 }
 
 - (void)viewSwitched:(NSSegmentedControl *)sender { [self switchToView:sender.selectedSegment]; }
+
+- (void)showExpenses {
+    if (self.scope.kind != ManagementScopeAll) {
+        self.scope = ManagementScope.all;
+        if (self.scopeChosen) self.scopeChosen(self.scope);
+    }
+    [self switchToView:ManagementViewExpenses];
+}
 
 - (void)switchToView:(ManagementView)mode {
     self.viewMode = mode;

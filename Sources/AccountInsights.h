@@ -51,8 +51,13 @@ NSString *_Nullable AccountUnrecordedRenewal(Account *account, NSDate *now);
 /// Actual spend in one year, from payment records, converted to CNY.
 @interface AccountExpenseReport : NSObject
 @property (nonatomic, readonly) NSInteger year;
+/// Net of refunds; failed charges count for nothing.
 @property (nonatomic, readonly) double total;
+/// Payments and refunds counted.
 @property (nonatomic, readonly) NSUInteger count;
+/// Refunded money in CNY (positive), already taken off `total`.
+@property (nonatomic, readonly) double refundTotal;
+@property (nonatomic, readonly) NSUInteger failedCount;
 /// Twelve totals, January first.
 @property (nonatomic, readonly) NSArray<NSNumber *> *monthTotals;
 /// Twelve {supplier: total} dictionaries.
@@ -66,10 +71,19 @@ NSString *_Nullable AccountUnrecordedRenewal(Account *account, NSDate *now);
 + (instancetype)reportForAccounts:(NSArray<Account *> *)accounts year:(NSInteger)year rates:(NSDictionary<NSString *, NSNumber *> *)rates;
 /// What each account was expected to pay in the month containing `day` against what was recorded, sorted by date:
 /// [{@"accountID", @"name", @"date" ("" if none), @"expected" (CNY or NSNull), @"recorded" (CNY),
-///   @"state": recorded | different | missing | upcoming | extra}].
+///   @"state": recorded | different | missing | upcoming | extra | failed}]. Refunds are taken off what was recorded;
+/// a month with only a failed charge is "failed".
 + (NSArray<NSDictionary *> *)reconciliationForAccounts:(NSArray<Account *> *)accounts month:(NSDate *)day now:(NSDate *)now
     rates:(NSDictionary<NSString *, NSNumber *> *)rates;
 @end
+
+/// What was spent in the month containing `day`, in CNY: payments less refunds. Failed charges and currencies
+/// without a rate are left out.
+double AccountSpentInMonth(NSArray<Account *> *accounts, NSDate *day, NSDictionary<NSString *, NSNumber *> *rates);
+/// Once this month's spending goes over `budget` (when above 0): {id, kind: budget, accountID: "", title, body}.
+/// Announced once a month; `state` remembers it.
+NSDictionary<NSString *, NSString *> *_Nullable AccountBudgetAlert(NSArray<Account *> *accounts, NSDate *now, double budget,
+    NSDictionary<NSString *, NSNumber *> *rates, NSMutableDictionary *state);
 
 /// Lowercased email → accounts sharing it, for emails used by more than one account.
 NSDictionary<NSString *, NSArray<Account *> *> *AccountDuplicateEmails(NSArray<Account *> *accounts);

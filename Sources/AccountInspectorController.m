@@ -826,19 +826,25 @@ static NSString *SourceName(NSString *source, id value) {
 
     self.paymentRows = account.payments;
     [self.paymentsTable reloadData];
-    double total = 0;
+    double total = 0, refunded = 0;
+    NSUInteger counted = 0, failed = 0;
     NSMutableOrderedSet *missing = [NSMutableOrderedSet orderedSet];
     for (AccountPayment *payment in account.payments) {
+        if (payment.isFailed) { failed++; continue; }
+        counted++;
         NSNumber *converted = AccountAmountInCNY(payment.amount, payment.currency, rates);
-        if (converted) total += converted.doubleValue;
-        else [missing addObject:payment.currency.length ? payment.currency : @"未填币种"];
+        if (!converted) [missing addObject:payment.currency.length ? payment.currency : @"未填币种"];
+        total += converted.doubleValue * payment.sign;
+        if (payment.isRefund) refunded += converted.doubleValue;
     }
     AccountPayment *last = account.lastPayment;
     if (!last) {
         self.paymentsSummary.stringValue = @"还没有付款记录。每次付款后记一笔，可同时顺延续费 / 到期日；读取账单时会自动导入直接在 ChatGPT 付款的扣款记录。";
     } else {
-        NSMutableString *summary = [NSMutableString stringWithFormat:@"共 %lu 笔，累计 %@", (unsigned long)account.payments.count,
+        NSMutableString *summary = [NSMutableString stringWithFormat:@"共 %lu 笔，累计 %@", (unsigned long)counted,
             AccountFormatCNY(@(total))];
+        if (refunded > 0) [summary appendFormat:@"（已扣除退款 %@）", AccountFormatCNY(@(refunded))];
+        if (failed) [summary appendFormat:@"，扣款失败 %lu 次", (unsigned long)failed];
         if (missing.count) [summary appendFormat:@"（%@ 未设汇率，未计入）", [missing.array componentsJoinedByString:@"、"]];
         [summary appendFormat:@" · 上次付款 %@", last.date];
         self.paymentsSummary.stringValue = summary;
@@ -1018,14 +1024,27 @@ static NSString *SourceName(NSString *source, id value) {
     if ([column isEqualToString:@"date"]) {
         cell.textField.stringValue = payment.date;
     } else if ([column isEqualToString:@"amount"]) {
-        cell.textField.stringValue = [payment.currency isEqualToString:@"CNY"] ? AccountFormatCNY(payment.amount)
+        NSString *money = [payment.currency isEqualToString:@"CNY"] ? AccountFormatCNY(payment.amount)
             : AccountFormatMoney(payment.amount, payment.currency);
+        // Refunds read as money coming back; failed charges are struck through since nothing was paid.
+        if (payment.isRefund) {
+            cell.textField.stringValue = [@"−" stringByAppendingString:money];
+            cell.textField.textColor = NSColor.systemGreenColor;
+        } else if (payment.isFailed) {
+            cell.textField.attributedStringValue = [[NSAttributedString alloc] initWithString:money attributes:@{
+                NSStrikethroughStyleAttributeName: @(NSUnderlineStyleSingle), NSFontAttributeName: cell.textField.font,
+                NSForegroundColorAttributeName: NSColor.tertiaryLabelColor}];
+        } else {
+            cell.textField.stringValue = money;
+        }
     } else {
         NSNumber *cny = AccountAmountInCNY(payment.amount, payment.currency, AccountExchangeRates());
-        cell.textField.stringValue = [payment.currency isEqualToString:@"CNY"] ? @"—" : (cny ? AccountFormatCNY(cny) : @"未设汇率");
-        cell.textField.textColor = cny ? NSColor.secondaryLabelColor : NSColor.systemOrangeColor;
+        cell.textField.stringValue = payment.isFailed ? @"扣款失败" : (payment.isRefund ? @"退款"
+            : ([payment.currency isEqualToString:@"CNY"] ? @"—" : (cny ? AccountFormatCNY(cny) : @"未设汇率")));
+        cell.textField.textColor = payment.isFailed ? NSColor.systemRedColor
+            : (cny || payment.isRefund ? NSColor.secondaryLabelColor : NSColor.systemOrangeColor);
     }
-    NSMutableArray *tip = [NSMutableArray array];
+    NSMutableArray *tip = [NSMutableArray arrayWithObject:AccountPaymentKindTitle(payment.kind)];
     for (NSString *part in @[payment.supplier, payment.paymentMethod,
                              payment.cardLast4.length ? [@"尾号 " stringByAppendingString:payment.cardLast4] : @"", payment.note])
         if (part.length) [tip addObject:part];
@@ -1265,7 +1284,7 @@ static NSString *SourceName(NSString *source, id value) {
     Account *account = [self account];
     if (!account || !payment) return;
     NSAlert *alert = [NSAlert new];
-    alert.messageText = [NSString stringWithFormat:@"删除 %@ 的付款记录？", payment.date];
+    alert.messageText = [NSString stringWithFormat:@"删除 %@ 的%@记录？", payment.date, AccountPaymentKindTitle(payment.kind)];
     alert.informativeText = AccountFormatMoney(payment.amount, payment.currency);
     [alert addButtonWithTitle:@"删除"].hasDestructiveAction = YES;
     [alert addButtonWithTitle:@"取消"];
@@ -1293,6 +1312,12 @@ static NSString *SourceName(NSString *source, id value) {
     Account *account = [self account];
     if (!account) return;
     AccountStore *store = self.coordinator.store;
+    NSPopUpButton *kind = [NSPopUpButton new];
+    for (NSString *value in AccountPaymentKinds()) {
+        [kind addItemWithTitle:AccountPaymentKindTitle(value)];
+        kind.lastItem.representedObject = value;
+    }
+    [kind selectItemAtIndex:MAX(0, (NSInteger)[AccountPaymentKinds() indexOfObject:payment.kind])];
     NSDatePicker *date = [NSDatePicker new];
     date.datePickerStyle = NSDatePickerStyleTextFieldAndStepper;
     date.datePickerElements = NSDatePickerElementFlagYearMonthDay;
@@ -1327,6 +1352,7 @@ static NSString *SourceName(NSString *source, id value) {
     extend.hidden = !isNew;
 
     NSGridView *grid = [NSGridView gridViewWithViews:@[
+        @[DeskLabel(@"类型", 13, NSFontWeightRegular), kind],
         @[DeskLabel(@"日期", 13, NSFontWeightRegular), date],
         @[DeskLabel(@"金额", 13, NSFontWeightRegular), money],
         @[DeskLabel(@"供应商", 13, NSFontWeightRegular), supplier],
@@ -1341,7 +1367,7 @@ static NSString *SourceName(NSString *source, id value) {
 
     NSAlert *alert = [NSAlert new];
     alert.messageText = isNew ? [NSString stringWithFormat:@"为“%@”记一笔付款", account.name] : @"编辑付款记录";
-    alert.informativeText = @"付款来源只保存卡号后 4 位。";
+    alert.informativeText = @"付款来源只保存卡号后 4 位。退款会从支出中扣除；扣款失败只作记录，不计入支出。";
     alert.accessoryView = grid;
     [alert addButtonWithTitle:isNew ? @"记录" : @"保存"];
     [alert addButtonWithTitle:@"取消"];
@@ -1358,6 +1384,7 @@ static NSString *SourceName(NSString *source, id value) {
             NSBeep();
             return;
         }
+        payment.kind = kind.selectedItem.representedObject;
         payment.date = AccountDayString(date.dateValue);
         payment.amount = value;
         payment.currency = currency.stringValue;
@@ -1368,7 +1395,8 @@ static NSString *SourceName(NSString *source, id value) {
         NSMutableArray *payments = [current.payments mutableCopy];
         if (isNew) [payments addObject:payment];
         current.payments = payments;
-        if (isNew && extend.state == NSControlStateValueOn) {
+        // Only money actually paid moves the renewal on.
+        if (isNew && payment.isCharge && extend.state == NSControlStateValueOn) {
             NSCalendar *calendar = NSCalendar.currentCalendar;
             NSDate *today = [calendar startOfDayForDate:NSDate.date];
             NSDate *base = AccountDateFromDayString(current.expiresAt);

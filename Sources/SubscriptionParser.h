@@ -23,7 +23,9 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable NSString *)supplierFromBillingText:(nullable NSString *)text;
 /// Last four digits of the payment card shown on the page ("Visa •••• 1234").
 + (nullable NSString *)cardLast4FromBillingText:(nullable NSString *)text;
-/// Paid charges listed under the payment history: [{@"date": yyyy-MM-dd, @"amount", @"currency"}], newest first.
+/// Charges listed under the payment history, newest first: [{@"date": yyyy-MM-dd, @"amount", @"currency", @"kind", @"note"}].
+/// Failed charges have kind "failed"; a refunded invoice gives a payment and a "refund" of the same amount;
+/// pending, cancelled and void invoices are left out.
 + (NSArray<NSDictionary *> *)paymentsFromBillingText:(nullable NSString *)text;
 
 /// GET /backend-api/wham/usage → usage windows and credits; `planType` receives "plan_type".

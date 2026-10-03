@@ -379,6 +379,11 @@ static BOOL IsChatGPTPage(NSURL *url) {
     [self.management focusTable];
 }
 
+- (void)showExpenseReport:(id)sender {
+    [self switchToMode:DeskModeManagement];
+    [self.management showExpenses];
+}
+
 - (void)updateWindowTitle {
     Account *account = [self.store accountWithID:self.selectedAccountID];
     NSString *title = @"智枢矩阵";
@@ -645,7 +650,8 @@ static BOOL IsChatGPTPage(NSURL *url) {
         NSMutableArray<AccountPayment *> *payments = [NSMutableArray array];
         for (NSDictionary *charge in charges) {
             AccountPayment *payment = [[AccountPayment alloc] initWithDictionary:@{@"date": charge[@"date"],
-                @"amount": charge[@"amount"], @"currency": charge[@"currency"], @"source": @"page"}];
+                @"amount": charge[@"amount"], @"currency": charge[@"currency"], @"source": @"page",
+                @"kind": charge[@"kind"] ?: @"", @"note": charge[@"note"] ?: @""}];
             payment.paymentMethod = account.paymentMethod;
             payment.cardLast4 = account.cardLast4;
             if (payment) [payments addObject:payment];

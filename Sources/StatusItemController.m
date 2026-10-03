@@ -190,6 +190,13 @@ static NSString *QuotaSummary(Account *account) {
     if (spend > 0 || missing.count)
         [self addHeader:[NSString stringWithFormat:@"每月支出 %@%@", AccountFormatCNY(@(spend)),
             missing.count ? [NSString stringWithFormat:@"（%@ 未设汇率）", [missing componentsJoinedByString:@"、"]] : @""] to:menu];
+    double budget = AccountMonthlyBudget();
+    if (budget > 0) {
+        double spent = AccountSpentInMonth(self.store.accounts, now, rates);
+        [self addHeader:spent > budget
+            ? [NSString stringWithFormat:@"本月已付 %@，超出预算 %@", AccountFormatCNY(@(spent)), AccountFormatCNY(@(spent - budget))]
+            : [NSString stringWithFormat:@"本月已付 %@ / 预算 %@", AccountFormatCNY(@(spent)), AccountFormatCNY(@(budget))] to:menu];
+    }
 
     // Every account, for opening one quickly.
     if (accounts.count) {

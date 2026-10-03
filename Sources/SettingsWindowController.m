@@ -145,6 +145,8 @@ static NSString *BackupTime(NSDate *date) {
 // Cost
 @property (nonatomic, strong) NSStackView *ratesStack;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSTextField *> *rateFields;
+@property (nonatomic, strong) NSTextField *budgetField;
+@property (nonatomic, strong) NSTextField *budgetStatus;
 @property (nonatomic, strong) NSComboBox *currencyPicker;
 @property (nonatomic, strong) NSMutableSet<NSString *> *pendingCurrencies;
 @property (nonatomic, strong) NSStackView *pricesStack;
@@ -327,7 +329,8 @@ static NSString *BackupTime(NSDate *date) {
     NSArray *toggles = @[
         @[[NSString stringWithFormat:@"额度告急与恢复（5 小时或每周额度低于 %.0f%%）", AccountLowQuotaPercent], NotifyQuotaDefaultsKey],
         @[@"续费与到期提醒（不自动续费的提前 3 天和前一天，自动续费的前一天）", NotifyRenewalDefaultsKey],
-        @[@"登录失效（曾经登录的账号被退出时）", NotifySignedOutDefaultsKey]];
+        @[@"登录失效（曾经登录的账号被退出时）", NotifySignedOutDefaultsKey],
+        @[@"本月支出超出预算（在“费用”中设置每月预算后生效）", NotifyBudgetDefaultsKey]];
     for (NSArray *toggle in toggles) {
         NSButton *checkbox = [NSButton checkboxWithTitle:toggle[0] target:self action:@selector(notificationToggled:)];
         checkbox.identifier = toggle[1];
@@ -679,6 +682,20 @@ static NSString *BackupTime(NSDate *date) {
 #pragma mark - Cost
 
 - (NSArray<NSView *> *)costRows {
+    NSNumberFormatter *money = [NSNumberFormatter new];
+    money.numberStyle = NSNumberFormatterDecimalStyle;
+    money.minimum = @0;
+    money.maximumFractionDigits = 2;
+    money.lenient = YES;
+    self.budgetField = [NSTextField new];
+    self.budgetField.formatter = money;
+    self.budgetField.placeholderString = @"不设预算";
+    double budget = AccountMonthlyBudget();
+    self.budgetField.objectValue = budget > 0 ? @(budget) : nil;
+    self.budgetField.delegate = self;
+    [self.budgetField.widthAnchor constraintEqualToConstant:120].active = YES;
+    self.budgetStatus = Hint(@"");
+    [self updateBudgetStatus];
     self.ratesStack = [NSStackView new];
     self.ratesStack.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.ratesStack.alignment = NSLayoutAttributeLeading;
@@ -701,7 +718,10 @@ static NSString *BackupTime(NSDate *date) {
     for (NSDictionary *price in AccountSupplierPrices()) [self addPriceRow:price];
     if (!self.priceRows.count) [self addPriceRow:@{}];
     NSButton *addPrice = [NSButton buttonWithTitle:@"添加一行" target:self action:@selector(addPriceRowClicked:)];
-    return @[Title(@"汇率（换算为人民币）"), self.ratesStack, Row(@[self.currencyPicker, add]),
+    return @[Title(@"每月预算"), Row(@[self.budgetField, DeskLabel(@"元（人民币）", 13, NSFontWeightRegular), self.budgetStatus]),
+        Hint(@"每月实际付款（扣除退款，含已归档账号）超出预算时，费用报表和账号管理顶部会标出，并可发送通知"
+             "（在“用量与通知”中开关）。留空表示不设预算。"),
+        DeskSeparator(), Title(@"汇率（换算为人民币）"), self.ratesStack, Row(@[self.currencyPicker, add]),
         Hint(@"所有费用统一折合为人民币显示与汇总：每月支出、续费日历、菜单栏和付款记录。汇率按“1 单位外币 = 多少人民币”填写，"
              "需要手动维护；没有填写汇率的币种不计入人民币合计，并会提示“未设汇率”。账号或付款记录中用到的币种会自动列出。"),
         DeskSeparator(), Title(@"供应商价目表"), self.pricesStack, Row(@[addPrice, self.pricesStatus]),
@@ -833,6 +853,32 @@ static NSString *BackupTime(NSDate *date) {
     }
 }
 
+- (void)updateBudgetStatus {
+    double budget = AccountMonthlyBudget();
+    if (budget <= 0) {
+        self.budgetStatus.stringValue = @"";
+        return;
+    }
+    double spent = AccountSpentInMonth(self.store.accounts, NSDate.date, AccountExchangeRates());
+    self.budgetStatus.stringValue = spent > budget
+        ? [NSString stringWithFormat:@"本月已付 %@，超出 %@", AccountFormatCNY(@(spent)), AccountFormatCNY(@(spent - budget))]
+        : [NSString stringWithFormat:@"本月已付 %@，还剩 %@", AccountFormatCNY(@(spent)), AccountFormatCNY(@(budget - spent))];
+    self.budgetStatus.textColor = spent > budget ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+}
+
+- (void)saveBudget {
+    NSNumber *value = [self.budgetField.objectValue isKindOfClass:NSNumber.class] && [self.budgetField.objectValue doubleValue] > 0
+        ? self.budgetField.objectValue : nil;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if (fabs(value.doubleValue - AccountMonthlyBudget()) < 0.005) return;
+    if (value) [defaults setDouble:value.doubleValue forKey:MonthlyBudgetDefaultsKey];
+    else [defaults removeObjectForKey:MonthlyBudgetDefaultsKey];
+    [self updateBudgetStatus];
+    [NSNotificationCenter.defaultCenter postNotificationName:ExchangeRatesDidChangeNotification object:nil];
+    // Asks for notification permission if the budget alert is the first one in use.
+    [self.alerts start];
+}
+
 - (void)saveRateField:(NSTextField *)field {
     NSMutableDictionary *saved = [[NSUserDefaults.standardUserDefaults dictionaryForKey:ExchangeRatesDefaultsKey] mutableCopy]
         ?: [NSMutableDictionary dictionary];
@@ -918,6 +964,7 @@ static NSString *BackupTime(NSDate *date) {
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
     id field = notification.object;
     if ([self.rateFields.allValues containsObject:field]) { [self saveRateField:field]; return; }
+    if (field == self.budgetField) { [self saveBudget]; return; }
     for (NSDictionary *controls in self.priceRows)
         if ([controls.allValues containsObject:field]) { [self savePriceList]; return; }
     if (field == self.authField) [self saveAuthorizationURL];

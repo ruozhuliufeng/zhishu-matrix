@@ -6,6 +6,7 @@
 NSString *const NotifyQuotaDefaultsKey = @"notifyQuota";
 NSString *const NotifyRenewalDefaultsKey = @"notifyRenewal";
 NSString *const NotifySignedOutDefaultsKey = @"notifySignedOut";
+NSString *const NotifyBudgetDefaultsKey = @"notifyBudget";
 NSNotificationName const AlertSettingsDidChangeNotification = @"AlertSettingsDidChangeNotification";
 
 static NSString *const AlertStateDefaultsKey = @"alertState";
@@ -25,7 +26,8 @@ static NSString *const RecordPaymentAction = @"record-payment";
     if ((self = [super init])) {
         _store = store;
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-        [defaults registerDefaults:@{NotifyQuotaDefaultsKey: @YES, NotifyRenewalDefaultsKey: @YES, NotifySignedOutDefaultsKey: @YES}];
+        [defaults registerDefaults:@{NotifyQuotaDefaultsKey: @YES, NotifyRenewalDefaultsKey: @YES, NotifySignedOutDefaultsKey: @YES,
+                                     NotifyBudgetDefaultsKey: @YES}];
         NSDictionary *saved = [defaults dictionaryForKey:AlertStateDefaultsKey];
         _state = saved ? [saved mutableCopy] : [NSMutableDictionary dictionary];
     }
@@ -41,6 +43,10 @@ static NSString *const RecordPaymentAction = @"record-payment";
     return kinds;
 }
 
+- (BOOL)budgetEnabled {
+    return [NSUserDefaults.standardUserDefaults boolForKey:NotifyBudgetDefaultsKey] && AccountMonthlyBudget() > 0;
+}
+
 - (void)start {
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     center.delegate = self;
@@ -48,7 +54,7 @@ static NSString *const RecordPaymentAction = @"record-payment";
         options:UNNotificationActionOptionForeground];
     [center setNotificationCategories:[NSSet setWithObject:[UNNotificationCategory categoryWithIdentifier:PaymentCategory
         actions:@[record] intentIdentifiers:@[] options:0]]];
-    if (self.enabledKinds)
+    if (self.enabledKinds || self.budgetEnabled)
         [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
             completionHandler:^(BOOL granted, NSError *error) {}];
     [self evaluate];
@@ -65,7 +71,12 @@ static NSString *const RecordPaymentAction = @"record-payment";
 }
 
 - (void)evaluateNow {
-    NSArray<NSDictionary *> *alerts = AccountAlertsDue(_store.accounts, NSDate.date, _state, self.enabledKinds);
+    NSDate *now = NSDate.date;
+    NSMutableArray<NSDictionary *> *alerts = [AccountAlertsDue(_store.accounts, now, _state, self.enabledKinds) mutableCopy];
+    // Real money counts toward the budget, archived accounts included.
+    NSDictionary *budget = self.budgetEnabled
+        ? AccountBudgetAlert(_store.accounts, now, AccountMonthlyBudget(), AccountExchangeRates(), _state) : nil;
+    if (budget) [alerts addObject:budget];
     [NSUserDefaults.standardUserDefaults setObject:_state forKey:AlertStateDefaultsKey];
     for (NSDictionary *alert in alerts) [self post:alert];
 }
@@ -80,7 +91,7 @@ static NSString *const RecordPaymentAction = @"record-payment";
     content.title = alert[@"title"];
     content.body = alert[@"body"];
     content.sound = UNNotificationSound.defaultSound;
-    content.threadIdentifier = alert[@"accountID"];
+    content.threadIdentifier = [alert[@"accountID"] length] ? alert[@"accountID"] : alert[@"kind"];
     BOOL payment = [alert[@"kind"] isEqualToString:@"payment"] || [alert[@"kind"] isEqualToString:@"renewal"];
     if (payment) content.categoryIdentifier = PaymentCategory;
     content.userInfo = @{@"accountID": alert[@"accountID"], @"kind": alert[@"kind"] ?: @"", @"date": alert[@"date"] ?: @""};
@@ -122,7 +133,9 @@ static NSString *const RecordPaymentAction = @"record-payment";
     // A payment prompt opens the payment form, whether its button or the notification itself was clicked.
     BOOL record = [response.actionIdentifier isEqualToString:RecordPaymentAction] || [info[@"kind"] isEqual:@"payment"];
     dispatch_async(dispatch_get_main_queue(), ^{
-        if ([identifier isKindOfClass:NSString.class]) {
+        if ([info[@"kind"] isEqual:@"budget"]) {
+            if (self.openExpenses) self.openExpenses();
+        } else if ([identifier isKindOfClass:NSString.class]) {
             if (record && self.recordPayment) self.recordPayment(identifier, date);
             else if (self.openAccount) self.openAccount(identifier);
         }

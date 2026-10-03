@@ -65,7 +65,7 @@ NSArray<NSString *> *AccountMissingFields(Account *account, NSDate *now) {
     if (!account.paymentMethod.length) [missing addObject:@"付款方式"];
     else if (!account.cardLast4.length && [account.paymentMethod rangeOfString:@"(信用卡|借记卡|银行卡|储蓄卡|Visa|Master|Card)"
         options:NSRegularExpressionSearch | NSCaseInsensitiveSearch].location != NSNotFound) [missing addObject:@"卡尾号"];
-    if (!account.payments.count) {
+    if (!account.lastPayment) {
         [missing addObject:@"付款记录"];
     } else if (account.autoRenew.boolValue) {
         // A monthly renewal should leave a payment at least every month or so.
@@ -261,9 +261,42 @@ NSString *AccountUnrecordedRenewal(Account *account, NSDate *now) {
         : [calendar dateByAddingUnit:NSCalendarUnitMonth value:-1 toDate:expiry options:0];
     if ([renewal compare:today] == NSOrderedDescending) return nil;
     NSString *earliest = AccountDayString([renewal dateByAddingTimeInterval:-3 * 86400]);
+    // Only money actually paid settles a renewal; a refund or a failed charge does not.
     for (AccountPayment *payment in account.payments)
-        if ([payment.date compare:earliest] != NSOrderedAscending) return nil;
+        if (payment.isCharge && [payment.date compare:earliest] != NSOrderedAscending) return nil;
     return AccountDayString(renewal);
+}
+
+#pragma mark - Budget
+
+static NSString *MonthPrefix(NSDate *day) {
+    NSDateComponents *parts = [NSCalendar.currentCalendar components:NSCalendarUnitYear | NSCalendarUnitMonth fromDate:day];
+    return [NSString stringWithFormat:@"%04ld-%02ld", (long)parts.year, (long)parts.month];
+}
+
+double AccountSpentInMonth(NSArray<Account *> *accounts, NSDate *day, NSDictionary<NSString *, NSNumber *> *rates) {
+    NSString *prefix = [MonthPrefix(day) stringByAppendingString:@"-"];
+    double spent = 0;
+    for (Account *account in accounts)
+        for (AccountPayment *payment in account.payments)
+            if ([payment.date hasPrefix:prefix])
+                spent += AccountAmountInCNY(payment.amount, payment.currency, rates).doubleValue * payment.sign;
+    return spent;
+}
+
+NSDictionary<NSString *, NSString *> *AccountBudgetAlert(NSArray<Account *> *accounts, NSDate *now, double budget,
+    NSDictionary<NSString *, NSNumber *> *rates, NSMutableDictionary *state) {
+    if (budget <= 0) return nil;
+    NSString *month = MonthPrefix(now);
+    if ([state[@"budget"] isEqual:month]) return nil;
+    double spent = AccountSpentInMonth(accounts, now, rates);
+    if (spent <= budget + 0.005) return nil;
+    state[@"budget"] = month;
+    NSInteger monthNumber = [[month substringFromIndex:5] integerValue];
+    return @{@"id": [@"budget." stringByAppendingString:month], @"kind": @"budget", @"accountID": @"",
+        @"title": [NSString stringWithFormat:@"%ld 月支出已超出预算", (long)monthNumber],
+        @"body": [NSString stringWithFormat:@"本月已付 %@，预算 %@，超出 %@。", AccountFormatCNY(@(spent)), AccountFormatCNY(@(budget)),
+            AccountFormatCNY(@(spent - budget))]};
 }
 
 #pragma mark - Expense report
@@ -304,14 +337,15 @@ static void Add(NSMutableDictionary<NSString *, NSNumber *> *totals, NSString *k
     NSMutableDictionary *accountIDs = [NSMutableDictionary dictionary];
     NSMutableOrderedSet *missing = [NSMutableOrderedSet orderedSet];
     NSString *prefix = [NSString stringWithFormat:@"%04ld-", (long)year];
-    double total = 0;
-    NSUInteger count = 0;
+    double total = 0, refunds = 0;
+    NSUInteger count = 0, failed = 0;
     for (Account *account in accounts) {
         NSString *accountKey = account.name;
         if (accountIDs[accountKey] && ![accountIDs[accountKey] isEqualToString:account.identifier])
             accountKey = [NSString stringWithFormat:@"%@（%@）", account.name, [account.identifier substringToIndex:4]];
         for (AccountPayment *payment in account.payments) {
             if (![payment.date hasPrefix:prefix]) continue;
+            if (payment.isFailed) { failed++; continue; }
             NSNumber *cny = AccountAmountInCNY(payment.amount, payment.currency, rates);
             if (!cny) {
                 [missing addObject:payment.currency.length ? payment.currency : @"未填币种"];
@@ -319,7 +353,8 @@ static void Add(NSMutableDictionary<NSString *, NSNumber *> *totals, NSString *k
             }
             NSInteger month = [[payment.date substringWithRange:NSMakeRange(5, 2)] integerValue] - 1;
             if (month < 0 || month > 11) continue;
-            double value = cny.doubleValue;
+            double value = cny.doubleValue * payment.sign;
+            if (payment.isRefund) refunds += cny.doubleValue;
             NSString *supplier = payment.supplier.length ? payment.supplier : (account.supplier.length ? account.supplier : @"未填写供应商");
             NSString *method = payment.paymentMethod.length ? payment.paymentMethod : account.paymentMethod;
             NSString *card = payment.cardLast4.length ? payment.cardLast4 : account.cardLast4;
@@ -340,6 +375,8 @@ static void Add(NSMutableDictionary<NSString *, NSNumber *> *totals, NSString *k
     }
     report->_total = total;
     report->_count = count;
+    report->_refundTotal = refunds;
+    report->_failedCount = failed;
     report->_monthTotals = months;
     report->_monthSupplierTotals = monthSuppliers;
     report->_bySupplier = SortedGroups(supplierTotals, supplierCounts, nil);
@@ -359,11 +396,13 @@ static void Add(NSMutableDictionary<NSString *, NSNumber *> *totals, NSString *k
     NSMutableArray *rows = [NSMutableArray array];
     for (Account *account in accounts) {
         double recorded = 0;
-        BOOL anyRecorded = NO;
+        BOOL anyRecorded = NO, anyCharge = NO, anyFailed = NO;
         for (AccountPayment *payment in account.payments) {
             if (![payment.date hasPrefix:prefix]) continue;
+            if (payment.isFailed) { anyFailed = YES; continue; }
             anyRecorded = YES;
-            recorded += AccountAmountInCNY(payment.amount, payment.currency, rates).doubleValue;
+            if (payment.isCharge) anyCharge = YES;
+            recorded += AccountAmountInCNY(payment.amount, payment.currency, rates).doubleValue * payment.sign;
         }
         // The charge expected this month: the renewal day moved into this month for auto-renewals,
         // the expiry for subscriptions renewed by hand.
@@ -387,13 +426,15 @@ static void Add(NSMutableDictionary<NSString *, NSNumber *> *totals, NSString *k
                 date = account.expiresAt;
             }
         }
-        if (!date.length && !anyRecorded) continue;
+        if (!date.length && !anyRecorded && !anyFailed) continue;
         NSDictionary *charge = account.expectedCharge;
         NSNumber *expected = date.length ? AccountAmountInCNY(charge[@"amount"], charge[@"currency"], rates) : nil;
-        NSString *state = @"extra";
+        NSString *state = anyRecorded ? @"extra" : @"failed";
         if (date.length) {
-            if (anyRecorded) state = !expected || fabs(expected.doubleValue - recorded) <= MAX(1, expected.doubleValue * 0.01)
+            if (anyCharge) state = !expected || fabs(expected.doubleValue - recorded) <= MAX(1, expected.doubleValue * 0.01)
                 ? @"recorded" : @"different";
+            else if (anyFailed) state = @"failed";
+            else if (anyRecorded) state = @"different";
             else state = [date compare:today] == NSOrderedDescending ? @"upcoming" : @"missing";
         }
         [rows addObject:@{@"accountID": account.identifier, @"name": account.name, @"date": date,

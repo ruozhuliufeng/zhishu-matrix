@@ -41,6 +41,9 @@ extern NSString *const ExchangeRatesDefaultsKey;
 extern NSNotificationName const ExchangeRatesDidChangeNotification;
 /// The saved rates, always including CNY = 1.
 NSDictionary<NSString *, NSNumber *> *AccountExchangeRates(void);
+/// NSUserDefaults key: the monthly budget in CNY; 0 or missing means none. Changes post ExchangeRatesDidChangeNotification.
+extern NSString *const MonthlyBudgetDefaultsKey;
+double AccountMonthlyBudget(void);
 /// `amount` in CNY with these rates, or nil when the currency has no rate.
 NSNumber *_Nullable AccountAmountInCNY(NSNumber *_Nullable amount, NSString *_Nullable currency,
     NSDictionary<NSString *, NSNumber *> *rates);
@@ -75,7 +78,11 @@ NSDictionary *_Nullable AccountListedPrice(NSString *_Nullable supplier, NSStrin
 - (BOOL)isSameAppAsClientID:(nullable NSString *)clientID redirect:(nullable NSString *)redirect;
 @end
 
-/// One payment made for an account's subscription.
+/// Payment kinds in display order: "" (付款), "refund" (退款), "failed" (扣款失败).
+NSArray<NSString *> *AccountPaymentKinds(void);
+NSString *AccountPaymentKindTitle(NSString *_Nullable kind);
+
+/// One payment made for an account's subscription, money refunded, or a charge that failed.
 @interface AccountPayment : NSObject
 @property (nonatomic, copy) NSString *identifier;
 /// "yyyy-MM-dd".
@@ -88,9 +95,17 @@ NSDictionary *_Nullable AccountListedPrice(NSString *_Nullable supplier, NSStrin
 @property (nonatomic, copy, null_resettable) NSString *note;
 /// "manual" or "page" (read from the billing page).
 @property (nonatomic, copy, null_resettable) NSString *source;
+/// See AccountPaymentKinds(); empty for an ordinary payment.
+@property (nonatomic, copy, null_resettable) NSString *kind;
+/// An ordinary payment: money actually spent.
+@property (nonatomic, readonly) BOOL isCharge;
+@property (nonatomic, readonly) BOOL isRefund;
+@property (nonatomic, readonly) BOOL isFailed;
+/// How the amount counts toward spending: +1 for a payment, -1 for a refund, 0 for a failed charge.
+@property (nonatomic, readonly) NSInteger sign;
 - (nullable instancetype)initWithDictionary:(NSDictionary *)dictionary;
 - (NSDictionary *)dictionaryRepresentation;
-/// Same day, amount and currency: the same charge read twice.
+/// Same day, kind, amount and currency: the same charge read twice.
 - (BOOL)isSameChargeAs:(AccountPayment *)other;
 @end
 
@@ -178,6 +193,7 @@ NSString *AccountLifecycleTitle(NSString *_Nullable lifecycle);
 @property (nonatomic, readonly, getter=isRetired) BOOL retired;
 /// Neither archived nor retired: counted in monthly spend, reminders, completeness and refreshes.
 @property (nonatomic, readonly, getter=isTracked) BOOL tracked;
+/// The newest ordinary payment (refunds and failed charges are left out).
 @property (nonatomic, readonly, nullable) AccountPayment *lastPayment;
 /// "Google Play · 尾号 1234"; empty when nothing is filled in.
 @property (nonatomic, readonly) NSString *paymentSummary;

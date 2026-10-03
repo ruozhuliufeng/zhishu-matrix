@@ -146,13 +146,26 @@ static NSString *const StoreManagedPattern =
             if ([datePattern firstMatchInString:lines[next] options:0 range:NSMakeRange(0, lines[next].length)]) break;
             [row appendFormat:@"\n%@", lines[next]];
         }
-        if (Capture(@"(失败|未支付|待支付|已退款|退款|已取消|作废|Failed|Unpaid|Refunded|Void|Declined)", row)) continue;
+        // Pending, cancelled and void invoices were never charged.
+        if (Capture(@"(待支付|处理中|已取消|作废|Pending|Processing|Void|Cancel)", row)) continue;
         NSDictionary *price = [self priceFromBillingText:row];
         if (!price) continue;
-        NSString *key = [NSString stringWithFormat:@"%@|%@|%@", date, price[@"amount"], price[@"currency"]];
+        NSString *kind = @"";
+        NSString *note = @"";
+        if (Capture(@"(部分退款|Partially refunded)", row)) note = @"账单页显示部分退款";
+        else if (Capture(@"(已退款|退款|Refunded)", row)) kind = @"refund";
+        else if (Capture(@"(失败|未支付|被拒|Failed|Unpaid|Declined)", row)) kind = @"failed";
+        NSString *key = [NSString stringWithFormat:@"%@|%@|%@|%@", date, price[@"amount"], price[@"currency"], kind];
         if ([seen containsObject:key]) continue;
         [seen addObject:key];
-        [payments addObject:@{@"date": date, @"amount": price[@"amount"], @"currency": price[@"currency"]}];
+        NSDictionary *entry = @{@"date": date, @"amount": price[@"amount"], @"currency": price[@"currency"], @"kind": kind, @"note": note};
+        if ([kind isEqualToString:@"refund"]) {
+            // A refunded invoice was paid and then refunded: both are recorded, so it nets to zero.
+            note = @"账单页显示已退款";
+            [payments addObject:@{@"date": date, @"amount": price[@"amount"], @"currency": price[@"currency"], @"kind": @"", @"note": note}];
+            entry = @{@"date": date, @"amount": price[@"amount"], @"currency": price[@"currency"], @"kind": kind, @"note": note};
+        }
+        [payments addObject:entry];
     }
     return [payments sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
         return [b[@"date"] compare:a[@"date"]];
