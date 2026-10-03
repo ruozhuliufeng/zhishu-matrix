@@ -11,6 +11,7 @@
 #import "DeskUI.h"
 #import "Keychain.h"
 #import "MainWindowController.h"
+#import "NetworkDiagnosisWindowController.h"
 #import "NetworkProxy.h"
 #import "StatusItemController.h"
 #import "WebDAVClient.h"
@@ -867,11 +868,12 @@ static NSString *BackupTime(NSDate *date) {
     self.proxyField.delegate = self;
     [self.proxyField.widthAnchor constraintEqualToConstant:360].active = YES;
     self.proxyTestButton = [NSButton buttonWithTitle:@"测试连接" target:self action:@selector(testProxy:)];
+    NSButton *diagnose = [NSButton buttonWithTitle:@"网络诊断…" target:self action:@selector(diagnoseNetwork:)];
     self.proxyResult = Hint(@"");
-    return @[Title(@"默认代理"), Row(@[self.proxyField, self.proxyTestButton]), self.proxyResult,
+    return @[Title(@"默认代理"), Row(@[self.proxyField, self.proxyTestButton, diagnose]), self.proxyResult,
         Hint(@"支持 http://、https:// 和 socks5:// 代理，可带用户名和密码（user:pass@host:port）。留空时跟随 macOS 的系统代理设置"
              "（如 Clash、Surge 开启的系统代理）。代理作用于账号页面、用量与账单读取以及授权窗口；单个账号可在右侧详情的“网络”中单独设置。"
-             "“测试连接”会显示 chatgpt.com 看到的出口 IP 与地区。")];
+             "“测试连接”会显示 chatgpt.com 看到的出口 IP 与地区；页面打不开时，用“网络诊断”逐个检查 ChatGPT 用到的域名。")];
 }
 
 - (void)saveProxy {
@@ -904,6 +906,11 @@ static NSString *BackupTime(NSDate *date) {
         self.proxyResult.textColor = failure ? NSColor.systemRedColor
             : ([summary containsString:@"不支持"] ? NSColor.systemOrangeColor : NSColor.systemGreenColor);
     }];
+}
+
+- (void)diagnoseNetwork:(id)sender {
+    [self commitEditing];
+    [NetworkDiagnosisWindowController showForAccount:nil];
 }
 
 #pragma mark - Editing

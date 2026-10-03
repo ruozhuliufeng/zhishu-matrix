@@ -366,6 +366,7 @@
     [self add:@"从当前页面读取订阅" action:@selector(syncSubscription:) key:nil modifiers:0 to:account target:controller];
     [self add:@"查看当前会话" action:@selector(showCurrentSession:) key:@"k" modifiers:command | shift to:account target:controller];
     [self add:@"打开授权链接…" action:@selector(openAuthorizationLink:) key:@"l" modifiers:command | shift to:account target:controller];
+    [self add:@"网络诊断…" action:@selector(diagnoseNetwork:) key:nil modifiers:0 to:account target:controller];
     [account addItem:[NSMenuItem separatorItem]];
     [self add:@"重命名…" action:@selector(renameSelectedAccount:) key:nil modifiers:0 to:account target:controller];
     [self add:@"移动到分组…" action:@selector(moveSelectedToGroup:) key:nil modifiers:0 to:account target:controller];

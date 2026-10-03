@@ -14,6 +14,7 @@
 #import "ManagementController.h"
 #import "ManagementNavigatorController.h"
 #import "ManagementScope.h"
+#import "NetworkDiagnosisWindowController.h"
 #import "NetworkProxy.h"
 #import "SubscriptionParser.h"
 
@@ -1148,6 +1149,17 @@ static BOOL IsChatGPTPage(NSURL *url) {
         }];
 }
 
+#pragma mark - Network
+
+- (void)diagnoseNetwork:(id)sender {
+    NSArray<NSString *> *identifiers = [self targetAccountIDs];
+    [NetworkDiagnosisWindowController showForAccount:identifiers.count == 1 ? [self.store accountWithID:identifiers.firstObject] : nil];
+}
+
+- (void)diagnoseFromMenu:(NSMenuItem *)sender {
+    [NetworkDiagnosisWindowController showForAccount:[self.store accountWithID:[sender.representedObject firstObject]]];
+}
+
 #pragma mark - Client authorization
 
 - (void)openAuthorizationLink:(id)sender {
@@ -1385,6 +1397,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
         if (account.email.length)
             [menu addItem:[self menuItem:@"复制邮箱" symbol:@"doc.on.doc" action:@selector(copyEmailFromMenu:) object:ids]];
         [menu addItem:[self menuItem:@"打开授权链接…" symbol:@"person.badge.key" action:@selector(authorizeFromMenu:) object:ids]];
+        [menu addItem:[self menuItem:@"网络诊断…" symbol:@"stethoscope" action:@selector(diagnoseFromMenu:) object:ids]];
         if (self.sessions[account.identifier])
             [menu addItem:[self menuItem:@"查看当前会话" symbol:@"key.horizontal" action:@selector(sessionFromMenu:) object:ids]];
         [menu addItem:[NSMenuItem separatorItem]];

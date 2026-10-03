@@ -45,6 +45,8 @@ extern NSString *const LaunchViewDefaultsKey;
 - (IBAction)openBillingPageForSelected:(nullable id)sender;
 - (IBAction)setPaymentInfoForSelected:(nullable id)sender;
 - (IBAction)recordPaymentForSelected:(nullable id)sender;
+/// Diagnoses the network through the selected account's proxy, or the default proxy without a selection.
+- (IBAction)diagnoseNetwork:(nullable id)sender;
 @end
 
 NS_ASSUME_NONNULL_END

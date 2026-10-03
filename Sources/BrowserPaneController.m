@@ -1,6 +1,8 @@
 #import "BrowserPaneController.h"
 #import "BrowserSession.h"
 #import "DeskUI.h"
+#import "NetworkDiagnosis.h"
+#import "NetworkDiagnosisWindowController.h"
 
 @interface BrowserPaneController ()
 @property (nonatomic, weak) id<AccountCoordinator> coordinator;
@@ -9,6 +11,7 @@
 @property (nonatomic, strong) NSView *emptyView;
 @property (nonatomic, strong) DeskFillView *errorView;
 @property (nonatomic, strong) NSTextField *errorDetail;
+@property (nonatomic, strong) NSTextField *errorHint;
 @property (nonatomic, copy) NSArray<NSLayoutConstraint *> *webConstraints;
 @end
 
@@ -61,15 +64,26 @@
 - (DeskFillView *)buildErrorView {
     DeskFillView *overlay = [DeskFillView new];
     self.errorDetail = [self hint:@""];
+    self.errorDetail.textColor = NSColor.labelColor;
+    self.errorDetail.selectable = YES;
+    self.errorHint = [self hint:@""];
+    self.errorHint.font = [NSFont systemFontOfSize:12];
+    self.errorHint.preferredMaxLayoutWidth = 460;
     NSButton *retry = DeskButton(@"重新加载", @"arrow.clockwise", self, @selector(retry:));
+    NSButton *diagnose = DeskButton(@"网络诊断", @"stethoscope", self, @selector(diagnose:));
+    NSStackView *buttons = [NSStackView stackViewWithViews:@[diagnose, retry]];
+    buttons.spacing = 10;
     NSStackView *stack = [NSStackView stackViewWithViews:@[
         [self symbol:@"wifi.exclamationmark" size:44],
         DeskLabel(@"页面加载失败", 18, NSFontWeightSemibold),
         self.errorDetail,
-        retry
+        self.errorHint,
+        buttons
     ]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.spacing = 12;
+    [stack setCustomSpacing:6 afterView:self.errorDetail];
+    [stack setCustomSpacing:18 afterView:self.errorHint];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [overlay addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
@@ -137,7 +151,19 @@
     [self.progressLine setProgress:webView.estimatedProgress loading:loading];
     NSError *error = self.session.lastError;
     self.errorView.hidden = !error || loading;
-    if (error) self.errorDetail.stringValue = error.localizedDescription ?: @"请检查网络连接后重试。";
+    if (!error) return;
+    NetworkFailure failure = NetworkFailureForError(error);
+    NSString *host = NetworkFailingHost(error);
+    NSString *reason = failure == NetworkFailureOther ? error.localizedDescription : NetworkFailureDescription(failure);
+    self.errorDetail.stringValue = host ? [NSString stringWithFormat:@"无法打开 %@：%@", host, reason ?: @"连接失败"]
+                                        : (reason ?: @"请检查网络连接后重试。");
+    self.errorHint.stringValue = NetworkFailureHint(failure) ?: @"";
+    self.errorHint.hidden = !self.errorHint.stringValue.length;
+    self.errorHint.toolTip = failure == NetworkFailureOther ? nil : error.localizedDescription;
+}
+
+- (void)diagnose:(id)sender {
+    [NetworkDiagnosisWindowController showForAccount:[self.coordinator.store accountWithID:self.session.accountID]];
 }
 
 - (void)retry:(id)sender {

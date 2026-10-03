@@ -4,6 +4,7 @@
 #import "AccountInsights.h"
 #import "AuthorizationLink.h"
 #import "DeskUI.h"
+#import "NetworkDiagnosisWindowController.h"
 #import "NetworkProxy.h"
 
 static NSString *const UnknownPlanTitle = @"未获取";
@@ -423,6 +424,10 @@ static NSString *SourceName(NSString *source, id value) {
     self.proxyField.font = [NSFont monospacedSystemFontOfSize:11.5 weight:NSFontWeightRegular];
     self.proxyTestButton = DeskButton(@"测试连接", @"network", self, @selector(testProxy:));
     self.proxyTestButton.toolTip = @"通过此代理访问 chatgpt.com，显示出口 IP 和地区";
+    NSButton *diagnoseButton = DeskButton(@"网络诊断…", @"stethoscope", self, @selector(diagnoseNetwork:));
+    diagnoseButton.toolTip = @"通过此账号的代理逐个检查 ChatGPT 用到的域名，并给出排查建议";
+    NSStackView *proxyButtons = [NSStackView stackViewWithViews:@[self.proxyTestButton, diagnoseButton]];
+    proxyButtons.spacing = 8;
     self.proxyResult = [NSTextField wrappingLabelWithString:@""];
     self.proxyResult.font = [NSFont systemFontOfSize:11];
     self.proxyResult.textColor = NSColor.secondaryLabelColor;
@@ -522,7 +527,7 @@ static NSString *SourceName(NSString *source, id value) {
             [self fieldWithCaption:@"付款来源（卡尾号）" control:self.cardField], self.cardHint,
             [self fieldWithCaption:@"付款记录" control:self.paymentsScroll], self.paymentsSummary, addPayment]],
         [self sectionWithID:@"network" title:@"网络" views:@[
-            [self fieldWithCaption:@"代理" control:self.proxyField], self.proxyTestButton, self.proxyResult, proxyHint]],
+            [self fieldWithCaption:@"代理" control:self.proxyField], proxyButtons, self.proxyResult, proxyHint]],
         [self sectionWithID:@"auth" title:@"第三方授权" views:@[
             [self fieldWithCaption:@"已授权的应用" control:authScroll], self.authSummary,
             [self fieldWithCaption:@"授权链接" control:self.authField], authButtons, authHint]],
@@ -549,7 +554,7 @@ static NSString *SourceName(NSString *source, id value) {
     [self.sectionBodies[@"payment"] setCustomSpacing:2 afterView:self.cardHint];
     [self.sectionBodies[@"subscription"] setCustomSpacing:6 afterView:self.sourceLabel];
     [self.sectionBodies[@"auth"] setCustomSpacing:6 afterView:authButtons];
-    [self.sectionBodies[@"network"] setCustomSpacing:4 afterView:self.proxyTestButton];
+    [self.sectionBodies[@"network"] setCustomSpacing:4 afterView:proxyButtons];
 
     // Placeholder for no / multiple selection
     NSImageView *placeholderIcon = [NSImageView imageViewWithImage:
@@ -1378,6 +1383,12 @@ static NSString *SourceName(NSString *source, id value) {
         strongSelf.proxyResult.textColor = failure ? NSColor.systemRedColor
             : ([summary containsString:@"不支持"] ? NSColor.systemOrangeColor : NSColor.systemGreenColor);
     }];
+}
+
+- (void)diagnoseNetwork:(id)sender {
+    [self commitPendingEdits];
+    Account *account = [self account];
+    if (account) [NetworkDiagnosisWindowController showForAccount:account];
 }
 
 - (NSArray *)tokenField:(NSTokenField *)tokenField completionsForSubstring:(NSString *)substring

@@ -3,6 +3,7 @@
 #import "../Sources/AccountInsights.h"
 #import "../Sources/AuthorizationLink.h"
 #import "../Sources/ManagementScope.h"
+#import "../Sources/NetworkDiagnosis.h"
 #import "../Sources/SubscriptionParser.h"
 #import "../Sources/WebDAVClient.h"
 
@@ -839,6 +840,113 @@ static void TestExpenseReport(void) {
     CHECK([october[0][@"state"] isEqualToString:@"missing"], "flags a renewal without a payment once its day has passed");
 }
 
+static NSError *URLError(NSInteger code, NSString *url) {
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    if (url) info[NSURLErrorFailingURLErrorKey] = [NSURL URLWithString:url];
+    return [NSError errorWithDomain:NSURLErrorDomain code:code userInfo:info];
+}
+
+static NetworkDiagnosis *Diagnosis(NSString *proxy, NSDictionary *system, NSArray<NSNumber *> *failures, NSNumber *reachable) {
+    NSArray<NetworkCheck *> *checks = NetworkDiagnosis.standardChecks;
+    NetworkDiagnosis *diagnosis = [[NetworkDiagnosis alloc] initWithProxyText:proxy origin:@"默认代理" systemSettings:system checks:checks];
+    [checks enumerateObjectsUsingBlock:^(NetworkCheck *check, NSUInteger index, BOOL *stop) {
+        NetworkFailure failure = (NetworkFailure)failures[index].integerValue;
+        if (failure == NetworkFailureNone) [check finishWithStatus:200 duration:0.25];
+        else [check finishWithFailure:failure duration:1];
+    }];
+    diagnosis.proxyReachable = reachable;
+    return diagnosis;
+}
+
+static void TestNetworkDiagnosis(void) {
+    CHECK(NetworkFailureForError(nil) == NetworkFailureNone, "no error is no failure");
+    CHECK(NetworkFailureForError(URLError(NSURLErrorSecureConnectionFailed, nil)) == NetworkFailureTLS, "classifies TLS failures");
+    CHECK(NetworkFailureForError(URLError(NSURLErrorTimedOut, nil)) == NetworkFailureTimeout, "classifies timeouts");
+    CHECK(NetworkFailureForError(URLError(NSURLErrorCannotFindHost, nil)) == NetworkFailureDNS, "classifies DNS failures");
+    CHECK(NetworkFailureForError(URLError(NSURLErrorCannotConnectToHost, nil)) == NetworkFailureConnect, "classifies refused connections");
+    CHECK(NetworkFailureForError(URLError(NSURLErrorNotConnectedToInternet, nil)) == NetworkFailureOffline, "classifies offline");
+    CHECK(NetworkFailureForError(URLError(NSURLErrorServerCertificateUntrusted, nil)) == NetworkFailureCertificate, "classifies certificates");
+    CHECK(NetworkFailureForError([NSError errorWithDomain:@"kCFErrorDomainCFNetwork" code:310 userInfo:nil]) == NetworkFailureProxy,
+        "classifies HTTPS proxy failures");
+    CHECK(NetworkFailureForError([NSError errorWithDomain:@"kCFErrorDomainCFNetwork" code:122 userInfo:nil]) == NetworkFailureProxyAuth,
+        "classifies SOCKS credential failures");
+    NSError *wrapped = [NSError errorWithDomain:@"WebKitErrorDomain" code:999 userInfo:@{
+        NSUnderlyingErrorKey: [NSError errorWithDomain:NSPOSIXErrorDomain code:ECONNREFUSED userInfo:nil]}];
+    CHECK(NetworkFailureForError(wrapped) == NetworkFailureConnect, "looks through underlying errors");
+    CHECK(NetworkFailureForError([NSError errorWithDomain:@"Other" code:1 userInfo:nil]) == NetworkFailureOther, "unknown errors are other");
+    CHECK([NetworkFailingHost(URLError(NSURLErrorSecureConnectionFailed, @"https://auth.openai.com/authorize?x=1")) isEqualToString:@"auth.openai.com"],
+        "reads the failing host");
+    NSError *stringURL = [NSError errorWithDomain:NSURLErrorDomain code:-1 userInfo:@{NSURLErrorFailingURLStringErrorKey: @"https://chatgpt.com/"}];
+    CHECK([NetworkFailingHost(stringURL) isEqualToString:@"chatgpt.com"], "reads the failing URL string");
+    CHECK(NetworkFailureHint(NetworkFailureTLS) != nil && NetworkFailureHint(NetworkFailureOther) == nil, "hints at proxy problems");
+    CHECK([NetworkFailureDescription(NetworkFailureTLS) containsString:@"TLS"], "describes TLS failures");
+
+    NSDictionary *trace = NetworkTraceValues(@"fl=1\nip=203.0.113.9\nts=1\nloc=US\n\n=bad\n");
+    CHECK([trace[@"ip"] isEqualToString:@"203.0.113.9"] && [trace[@"loc"] isEqualToString:@"US"] && trace.count == 4, "parses trace pages");
+    CHECK(NetworkRegionUnsupported(@"hk") && NetworkRegionUnsupported(@"CN") && !NetworkRegionUnsupported(@"JP") && !NetworkRegionUnsupported(nil),
+        "knows unsupported regions");
+
+    NSString *host = nil;
+    NSInteger port = 0;
+    NSDictionary *clash = @{@"HTTPEnable": @1, @"HTTPProxy": @"127.0.0.1", @"HTTPPort": @7890,
+                            @"HTTPSEnable": @1, @"HTTPSProxy": @"127.0.0.1", @"HTTPSPort": @7890, @"SOCKSEnable": @0};
+    CHECK([NetworkSystemProxySummary(clash, &host, &port) isEqualToString:@"HTTPS 127.0.0.1:7890"] && [host isEqualToString:@"127.0.0.1"] && port == 7890,
+        "describes the system HTTPS proxy");
+    NSDictionary *socks = @{@"SOCKSEnable": @1, @"SOCKSProxy": @"10.0.0.2", @"SOCKSPort": @1080};
+    CHECK([NetworkSystemProxySummary(socks, &host, &port) isEqualToString:@"SOCKS 10.0.0.2:1080"] && port == 1080, "describes a SOCKS proxy");
+    CHECK([NetworkSystemProxySummary(@{@"ProxyAutoConfigEnable": @1, @"HTTPSEnable": @1, @"HTTPSProxy": @"h", @"HTTPSPort": @1}, &host, &port)
+        containsString:@"PAC"] && host == nil, "PAC has no endpoint to probe");
+    CHECK(NetworkSystemProxySummary(@{@"HTTPEnable": @1, @"HTTPProxy": @"h", @"HTTPPort": @80}, &host, &port).length == 0 && host == nil,
+        "an HTTP-only system proxy leaves https direct");
+
+    NSArray *allOK = @[@0, @0, @0, @0, @0];
+    NetworkDiagnosis *ok = Diagnosis(@"socks5://user:secret@127.0.0.1:1080", nil, allOK, @YES);
+    ok.region = @"US";
+    CHECK(ok.usesProxy && [ok.proxyHost isEqualToString:@"127.0.0.1"] && ok.proxyPort == 1080, "probes the configured proxy");
+    CHECK([ok.proxyDescription isEqualToString:@"默认代理 socks5://127.0.0.1:1080（带认证）"], "never shows the proxy password");
+    CHECK(ok.verdict == NetworkVerdictOK && [ok.headline isEqualToString:@"网络正常"], "all hosts working is OK");
+    CHECK(![ok.textReport containsString:@"secret"], "the report leaves out the password");
+    ok.region = @"HK";
+    CHECK(ok.verdict == NetworkVerdictUnsupportedRegion && [ok.advice containsString:@"HK"], "flags unsupported exit regions");
+
+    NetworkDiagnosis *pending = Diagnosis(@"http://127.0.0.1:7890", nil, allOK, nil);
+    CHECK(!pending.finished && pending.verdict == NetworkVerdictPending, "waits for the proxy probe");
+
+    NSNumber *tls = @(NetworkFailureTLS), *refused = @(NetworkFailureConnect), *offline = @(NetworkFailureOffline);
+    NetworkDiagnosis *down = Diagnosis(@"http://127.0.0.1:7890", nil, @[refused, refused, refused, refused, refused], @NO);
+    CHECK(down.verdict == NetworkVerdictProxyDown && [down.headline containsString:@"127.0.0.1:7890"], "a closed proxy port is reported first");
+
+    NetworkDiagnosis *partial = Diagnosis(@"http://127.0.0.1:7890", nil, @[@0, tls, @0, @0, @0], @YES);
+    CHECK(partial.verdict == NetworkVerdictPartial && [partial.advice containsString:@"auth.openai.com"], "names the hosts that fail");
+
+    NetworkDiagnosis *route = Diagnosis(@"http://127.0.0.1:7890", nil, @[tls, tls, tls, tls, @0], @YES);
+    CHECK(route.verdict == NetworkVerdictOpenAIRoute && [route.advice containsString:@"规则"], "control working blames the OpenAI route");
+
+    NetworkDiagnosis *dead = Diagnosis(@"http://127.0.0.1:7890", nil, @[tls, tls, tls, tls, tls], @YES);
+    CHECK(dead.verdict == NetworkVerdictNoRoute && [dead.headline containsString:@"代理已连接"], "nothing working blames the node");
+
+    NetworkDiagnosis *direct = Diagnosis(@"", @{}, @[refused, refused, refused, refused, refused], nil);
+    CHECK(!direct.usesProxy && direct.proxyHost == nil && direct.finished, "direct connections need no probe");
+    CHECK(direct.verdict == NetworkVerdictNoRoute && [direct.advice containsString:@"没有使用代理"], "suggests a proxy when going direct");
+    CHECK([direct.proxyDescription isEqualToString:@"未使用代理（直连）"], "describes direct connections");
+
+    NetworkDiagnosis *system = Diagnosis(@"", clash, allOK, @YES);
+    CHECK([system.proxyDescription isEqualToString:@"系统代理 HTTPS 127.0.0.1:7890"] && system.proxyPort == 7890, "follows the system proxy");
+
+    NetworkDiagnosis *noNetwork = Diagnosis(@"", @{}, @[offline, offline, offline, offline, offline], nil);
+    CHECK(noNetwork.verdict == NetworkVerdictOffline, "detects being offline");
+
+    NetworkCheck *auth = [NetworkCheck checkWithTitle:@"代理" URL:@"https://chatgpt.com/" control:NO];
+    [auth finishWithStatus:407 duration:0.1];
+    CHECK(auth.failure == NetworkFailureProxyAuth && !auth.succeeded, "407 is a proxy authentication failure");
+    [auth finishWithStatus:200 duration:0.1];
+    CHECK(auth.failure == NetworkFailureProxyAuth, "a check finishes once");
+    NetworkCheck *fast = [NetworkCheck checkWithTitle:@"x" URL:@"https://cdn.oaistatic.com/" control:NO];
+    [fast finishWithStatus:404 duration:0.32];
+    CHECK(fast.succeeded && [fast.detail isEqualToString:@"可连接 · 320 毫秒"] && !fast.readsTrace, "any HTTP response means reachable");
+    CHECK(NetworkDiagnosis.standardChecks.firstObject.readsTrace, "the first check reads the exit region");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -863,6 +971,7 @@ int main(void) {
         TestCompleteness();
         TestPaymentsDue();
         TestExpenseReport();
+        TestNetworkDiagnosis();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
