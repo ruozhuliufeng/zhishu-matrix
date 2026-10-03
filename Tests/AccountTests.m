@@ -2,6 +2,7 @@
 #import "../Sources/Account.h"
 #import "../Sources/AccountInsights.h"
 #import "../Sources/AuthorizationLink.h"
+#import "../Sources/BackupCrypto.h"
 #import "../Sources/ManagementScope.h"
 #import "../Sources/NetworkDiagnosis.h"
 #import "../Sources/SubscriptionParser.h"
@@ -1101,6 +1102,46 @@ static void TestRefundsAndBudget(void) {
         "a new month starts within the budget");
 }
 
+static NSData *ChangedEnvelope(NSData *envelope, NSString *key, id value) {
+    NSMutableDictionary *json = [[NSJSONSerialization JSONObjectWithData:envelope options:0 error:nil] mutableCopy];
+    json[key] = value;
+    return [NSJSONSerialization dataWithJSONObject:json options:0 error:nil];
+}
+
+static void TestBackupCrypto(void) {
+    NSData *plain = [@"{\"format\":\"chatgpt-account-desk\",\"accounts\":[{\"name\":\"主力\",\"email\":\"a@example.com\"}]}"
+        dataUsingEncoding:NSUTF8StringEncoding];
+    NSError *error = nil;
+    NSData *sealed = BackupEncrypt(plain, @"correct horse 电池", &error);
+    CHECK(sealed && !error && BackupDataIsEncrypted(sealed) && !BackupDataIsEncrypted(plain), "encrypts into an envelope");
+    NSString *text = [[NSString alloc] initWithData:sealed encoding:NSUTF8StringEncoding];
+    CHECK(![text containsString:@"example.com"] && ![text containsString:@"accounts"], "the envelope hides the accounts");
+    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:sealed options:0 error:nil];
+    CHECK([json[@"iterations"] isEqual:@200000] && [json[@"cipher"] isEqualToString:@"AES-256-CBC"] &&
+        [[[NSData alloc] initWithBase64EncodedString:json[@"salt"] options:0] length] == 16, "records the key derivation");
+    CHECK([BackupDecrypt(sealed, @"correct horse 电池", &error) isEqualToData:plain], "decrypts with the password");
+    NSData *again = BackupEncrypt(plain, @"correct horse 电池", nil);
+    CHECK(![again isEqualToData:sealed], "uses a fresh salt and IV each time");
+
+    error = nil;
+    CHECK(BackupDecrypt(sealed, @"wrong", &error) == nil && error.code == BackupCryptoErrorWrongPassword, "rejects a wrong password");
+    CHECK(BackupDecrypt(sealed, @"", &error) == nil, "rejects an empty password");
+    NSMutableData *cipher = [[[NSData alloc] initWithBase64EncodedString:json[@"data"] options:0] mutableCopy];
+    ((uint8_t *)cipher.mutableBytes)[0] ^= 0x01;
+    error = nil;
+    CHECK(BackupDecrypt(ChangedEnvelope(sealed, @"data", [cipher base64EncodedStringWithOptions:0]), @"correct horse 电池", &error) == nil &&
+        error.code == BackupCryptoErrorWrongPassword, "detects a modified ciphertext");
+    NSData *otherIV = [[NSMutableData dataWithLength:16] copy];
+    CHECK(BackupDecrypt(ChangedEnvelope(sealed, @"iv", [otherIV base64EncodedStringWithOptions:0]), @"correct horse 电池", nil) == nil,
+        "detects a swapped IV");
+    error = nil;
+    CHECK(BackupDecrypt(ChangedEnvelope(sealed, @"iterations", @1000), @"correct horse 电池", &error) == nil &&
+        error.code == BackupCryptoErrorUnreadable, "refuses weakened key derivation");
+    CHECK(BackupDecrypt(ChangedEnvelope(sealed, @"version", @2), @"correct horse 电池", &error) == nil &&
+        error.code == BackupCryptoErrorUnreadable, "refuses unknown versions");
+    CHECK(BackupDecrypt(plain, @"x", &error) == nil && error.code == BackupCryptoErrorUnreadable, "a plain backup is not an envelope");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -1128,6 +1169,7 @@ int main(void) {
         TestNetworkDiagnosis();
         TestLifecycleAndArchive();
         TestRefundsAndBudget();
+        TestBackupCrypto();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

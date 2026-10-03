@@ -6,7 +6,9 @@
 #import "AccountRefresher.h"
 #import "AppLock.h"
 #import "AuthorizationLink.h"
+#import "BackupCrypto.h"
 #import "BackupManager.h"
+#import "BackupPasswordPrompt.h"
 #import "BrowserSession.h"
 #import "DeskUI.h"
 #import "Keychain.h"
@@ -146,6 +148,9 @@ static NSString *BackupTime(NSDate *date) {
 @property (nonatomic, strong) NSStackView *ratesStack;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSTextField *> *rateFields;
 @property (nonatomic, strong) NSTextField *budgetField;
+@property (nonatomic, strong) NSButton *encryptionToggle;
+@property (nonatomic, strong) NSButton *changePasswordButton;
+@property (nonatomic, strong) NSTextField *encryptionStatus;
 @property (nonatomic, strong) NSTextField *budgetStatus;
 @property (nonatomic, strong) NSComboBox *currencyPicker;
 @property (nonatomic, strong) NSMutableSet<NSString *> *pendingCurrencies;
@@ -468,21 +473,80 @@ static NSString *BackupTime(NSDate *date) {
     NSButton *restoreRemote = [NSButton buttonWithTitle:@"从 WebDAV 恢复…" target:self action:@selector(restoreRemote:)];
     self.webdavButtons = @[test, upload, restoreRemote];
     self.webdavStatus = Hint(@"");
-    self.webdavInsecure = Hint(@"⚠︎ 这是不加密的 HTTP 地址：WebDAV 密码和备份内容（邮箱、付款信息、授权记录等）会以明文在网络上传输。"
-        "建议只在可信网络中使用，或为服务配置 HTTPS。");
+    self.webdavInsecure = Hint(@"⚠︎ 这是不加密的 HTTP 地址：WebDAV 密码会以明文在网络上传输；未开启备份加密时，备份内容（邮箱、"
+        "付款信息、授权记录等）也是明文。建议开启上方的备份加密，只在可信网络中使用，或为服务配置 HTTPS。");
     self.webdavInsecure.textColor = NSColor.systemOrangeColor;
     [self updateInsecureWarning];
 
+    self.encryptionToggle = [NSButton checkboxWithTitle:@"加密备份文件（本机备份和 WebDAV 上传）" target:self
+        action:@selector(encryptionToggled:)];
+    self.changePasswordButton = [NSButton buttonWithTitle:@"更改密码…" target:self action:@selector(changeBackupPassword:)];
+    self.encryptionStatus = Hint(@"");
+    [self refreshEncryptionState];
+
     return @[Title(@"本机备份"), self.autoBackupToggle, Row(@[backupNow, reveal, restoreLocal]), self.localStatus,
+        DeskSeparator(), Title(@"加密"), Row(@[self.encryptionToggle, self.changePasswordButton]), self.encryptionStatus,
+        Hint(@"使用 AES-256 加密，密钥由密码经 PBKDF2 生成，备份中只有密文。密码保存在本机钥匙串中，自动备份时使用；"
+             "恢复或在其他电脑上导入时需要输入密码，忘记密码将无法恢复加密的备份。开启前生成的备份不会被重新加密。"),
         DeskSeparator(), Title(@"WebDAV"),
         [self formRow:@"服务器" field:self.serverField], self.webdavInsecure, [self formRow:@"用户名" field:self.usernameField],
         [self formRow:@"密码" field:self.passwordField], [self formRow:@"远程目录" field:self.folderField],
         self.webdavToggle, Row(@[test, upload, restoreRemote]), self.webdavStatus,
-        Hint(@"备份只包含账号资料（名称、邮箱、订阅、分组、标签、备注、授权链接），不含密码、登录状态、访问令牌和代理密码。"
+        Hint(@"备份只包含账号资料（名称、邮箱、订阅、付款记录、授权记录、分组、标签、备注），不含密码、登录状态、访问令牌和代理密码。"
              "恢复会合并到当前列表：同一账号更新资料，列表中其他账号保留。坚果云请在“账户信息 → 安全选项”中生成第三方应用密码。")];
 }
 
 - (void)backupStateChanged:(NSNotification *)notification { [self refreshBackupStatus]; }
+
+- (void)refreshEncryptionState {
+    BOOL active = BackupEncryptionActive();
+    BOOL lostPassword = [NSUserDefaults.standardUserDefaults boolForKey:BackupEncryptionDefaultsKey] && !active;
+    self.encryptionToggle.state = active || lostPassword ? NSControlStateValueOn : NSControlStateValueOff;
+    self.changePasswordButton.enabled = active || lostPassword;
+    self.changePasswordButton.title = lostPassword ? @"设置密码…" : @"更改密码…";
+    self.encryptionStatus.stringValue = active ? @"已开启：新的备份都会加密。"
+        : (lostPassword ? @"钥匙串中没有备份密码，备份已暂停，请重新设置密码。" : @"未开启：备份文件是普通 JSON。");
+    self.encryptionStatus.textColor = lostPassword ? NSColor.systemRedColor
+        : (active ? NSColor.systemGreenColor : NSColor.secondaryLabelColor);
+}
+
+- (void)encryptionToggled:(NSButton *)sender {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if (sender.state != NSControlStateValueOn) {
+        // The saved password stays, so backups encrypted earlier can still be restored without typing it.
+        [defaults setBool:NO forKey:BackupEncryptionDefaultsKey];
+        [self refreshEncryptionState];
+        return;
+    }
+    if (BackupEncryptionPassword().length) {
+        [defaults setBool:YES forKey:BackupEncryptionDefaultsKey];
+        [self refreshEncryptionState];
+        [self.backup scheduleAutomaticBackup];
+        return;
+    }
+    BackupAskNewPassword(self.window, @"设置备份密码", ^(NSString *password) {
+        if (password && BackupSetEncryptionPassword(password)) {
+            [defaults setBool:YES forKey:BackupEncryptionDefaultsKey];
+            [self.backup scheduleAutomaticBackup];
+        }
+        [self refreshEncryptionState];
+    });
+}
+
+- (void)changeBackupPassword:(id)sender {
+    BOOL hadPassword = BackupEncryptionPassword().length > 0;
+    BackupAskNewPassword(self.window, hadPassword ? @"更改备份密码" : @"设置备份密码", ^(NSString *password) {
+        if (!password) return;
+        if (!BackupSetEncryptionPassword(password)) {
+            self.encryptionStatus.stringValue = @"无法把密码保存到钥匙串。";
+            self.encryptionStatus.textColor = NSColor.systemRedColor;
+            return;
+        }
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:BackupEncryptionDefaultsKey];
+        [self refreshEncryptionState];
+        if (hadPassword) self.encryptionStatus.stringValue = @"密码已更改。之前加密的备份仍需用旧密码恢复。";
+    });
+}
 
 - (void)updateInsecureWarning {
     NSURL *url = [NSURL URLWithString:[self.serverField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet]];
@@ -503,6 +567,11 @@ static NSString *BackupTime(NSDate *date) {
     NSUInteger count = self.backup.localBackups.count;
     self.localStatus.stringValue = [NSString stringWithFormat:@"最近一次本机备份：%@ · 共 %lu 份 · 位于数据文件夹的 Backups 中",
         BackupTime(self.backup.lastLocalBackup), (unsigned long)count];
+    self.localStatus.textColor = NSColor.secondaryLabelColor;
+    if (self.backup.lastLocalError) {
+        self.localStatus.stringValue = [@"自动备份失败：" stringByAppendingString:self.backup.lastLocalError];
+        self.localStatus.textColor = NSColor.systemRedColor;
+    }
     NSString *status = nil;
     if (self.backup.isUploading) status = @"正在上传…";
     else if (self.backup.lastRemoteError) status = [@"上次上传失败：" stringByAppendingString:self.backup.lastRemoteError];
@@ -647,6 +716,12 @@ static NSString *BackupTime(NSDate *date) {
 }
 
 - (void)confirmRestoreData:(NSData *)data name:(NSString *)name {
+    if (data && BackupDataIsEncrypted(data)) {
+        BackupOpenData(data, name, self.window, ^(NSData *plain) {
+            if (plain) dispatch_async(dispatch_get_main_queue(), ^{ [self confirmRestoreData:plain name:name]; });
+        });
+        return;
+    }
     NSDictionary *payload = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     NSArray *accounts = [payload isKindOfClass:NSDictionary.class] ? payload[@"accounts"] : nil;
     if (![accounts isKindOfClass:NSArray.class]) {

@@ -7,6 +7,7 @@
 #import "AccountSidebarController.h"
 #import "AuthorizationLink.h"
 #import "AuthorizationWindowController.h"
+#import "BackupPasswordPrompt.h"
 #import "BillingReader.h"
 #import "BrowserPaneController.h"
 #import "BrowserSession.h"
@@ -1339,8 +1340,21 @@ static BOOL IsChatGPTPage(NSURL *url) {
 - (void)importFileAtURL:(NSURL *)url {
     NSError *error = nil;
     NSData *data = [NSData dataWithContentsOfURL:url options:0 error:&error];
+    if (!data) {
+        [self showError:@"无法导入账号资料" detail:error.localizedDescription];
+        return;
+    }
+    // Encrypted backups can be imported too, once unlocked.
+    __weak typeof(self) weakSelf = self;
+    BackupOpenData(data, url.lastPathComponent, self.window, ^(NSData *plain) {
+        if (plain) [weakSelf importData:plain];
+    });
+}
+
+- (void)importData:(NSData *)data {
+    NSError *error = nil;
     NSUInteger added = 0, updated = 0;
-    if (!data || ![self.store importData:data added:&added updated:&updated error:&error]) {
+    if (![self.store importData:data added:&added updated:&updated error:&error]) {
         [self showError:@"无法导入账号资料" detail:error.localizedDescription];
         return;
     }

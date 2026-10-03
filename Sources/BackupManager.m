@@ -1,5 +1,6 @@
 #import "BackupManager.h"
 #import "Account.h"
+#import "BackupCrypto.h"
 #import "Keychain.h"
 #import "WebDAVClient.h"
 
@@ -11,6 +12,20 @@ NSString *const WebDAVUsernameDefaultsKey = @"webdavUsername";
 NSString *const WebDAVKeychainService = @"local.zhishu.webdav";
 NSNotificationName const BackupStateDidChangeNotification = @"BackupStateDidChangeNotification";
 NSString *const BackupFilePrefix = @"zhishu-matrix-";
+NSString *const BackupEncryptionDefaultsKey = @"backupEncryption";
+
+static NSString *const EncryptionKeychainService = @"local.zhishu.backup-encryption";
+static NSString *const EncryptionKeychainAccount = @"backup";
+
+NSString *BackupEncryptionPassword(void) { return KeychainPassword(EncryptionKeychainService, EncryptionKeychainAccount); }
+
+BOOL BackupSetEncryptionPassword(NSString *password) {
+    return KeychainSetPassword(password, EncryptionKeychainService, EncryptionKeychainAccount);
+}
+
+BOOL BackupEncryptionActive(void) {
+    return [NSUserDefaults.standardUserDefaults boolForKey:BackupEncryptionDefaultsKey] && BackupEncryptionPassword().length > 0;
+}
 
 static NSString *const LastRemoteBackupDefaultsKey = @"webdavLastBackup";
 
@@ -96,6 +111,12 @@ static NSData *AccountsFingerprint(NSData *payload) {
     _pending = NO;
     if (!_store.accounts.count) return;
     NSDate *last = self.lastLocalBackup;
+    if (!_lastFingerprint && self.localBackups.firstObject) {
+        // The newest backup may be encrypted; opening it once avoids repeating an unchanged backup after a relaunch.
+        NSData *latest = [NSData dataWithContentsOfURL:self.localBackups.firstObject];
+        NSString *password = BackupDataIsEncrypted(latest) ? BackupEncryptionPassword() : nil;
+        if (password) _lastFingerprint = AccountsFingerprint(BackupDecrypt(latest, password, nil));
+    }
     if (last && -last.timeIntervalSinceNow < self.automaticInterval) {
         // Too soon after the last one; try again when the interval has passed.
         _pending = YES;
@@ -109,20 +130,40 @@ static NSData *AccountsFingerprint(NSData *payload) {
     NSData *payload = [_store exportDataForAccountIDs:nil error:nil];
     NSData *fingerprint = AccountsFingerprint(payload);
     if (!payload || [fingerprint isEqualToData:_lastFingerprint]) return;
-    [self writeBackup:payload error:nil];
+    NSError *error = nil;
+    if (![self writeBackup:payload error:&error]) {
+        _lastLocalError = [error.localizedDescription copy];
+        [self notify];
+    }
+}
+
+/// The payload as it is stored: encrypted when encryption is on. Encryption that is on but has lost its
+/// password fails rather than falling back to plain text.
+- (NSData *)sealedPayload:(NSData *)payload error:(NSError **)error {
+    if (![NSUserDefaults.standardUserDefaults boolForKey:BackupEncryptionDefaultsKey]) return payload;
+    NSString *password = BackupEncryptionPassword();
+    if (!password.length) {
+        if (error) *error = [NSError errorWithDomain:BackupCryptoErrorDomain code:BackupCryptoErrorFailed userInfo:@{
+            NSLocalizedDescriptionKey: @"备份加密已开启，但钥匙串中没有备份密码。请在“设置 → 备份”中重新设置密码。"}];
+        return nil;
+    }
+    return BackupEncrypt(payload, password, error);
 }
 
 - (NSURL *)writeBackup:(NSData *)payload error:(NSError **)error {
     if (![NSFileManager.defaultManager createDirectoryAtURL:self.directory withIntermediateDirectories:YES attributes:nil error:error])
         return nil;
+    NSData *sealed = [self sealedPayload:payload error:error];
+    if (!sealed) return nil;
     NSString *name = [NSString stringWithFormat:@"%@%@.json", BackupFilePrefix, [NameFormatter() stringFromDate:NSDate.date]];
     NSURL *url = [self.directory URLByAppendingPathComponent:name];
-    if (![payload writeToURL:url options:NSDataWritingAtomic error:error]) return nil;
+    if (![sealed writeToURL:url options:NSDataWritingAtomic error:error]) return nil;
     _lastFingerprint = AccountsFingerprint(payload);
+    _lastLocalError = nil;
     NSArray<NSURL *> *backups = self.localBackups;
     for (NSUInteger index = self.localRetention; index < backups.count; index++)
         [NSFileManager.defaultManager removeItemAtURL:backups[index] error:nil];
-    if ([NSUserDefaults.standardUserDefaults boolForKey:WebDAVEnabledDefaultsKey]) [self uploadData:payload name:name completion:nil];
+    if ([NSUserDefaults.standardUserDefaults boolForKey:WebDAVEnabledDefaultsKey]) [self uploadSealedData:sealed name:name completion:nil];
     [self notify];
     return url;
 }
@@ -145,11 +186,17 @@ static NSData *AccountsFingerprint(NSData *payload) {
 }
 
 - (void)uploadData:(NSData *)data completion:(void (^)(NSString *))completion {
+    NSError *error = nil;
+    NSData *sealed = [self sealedPayload:data error:&error];
+    if (!sealed) {
+        [self finishUploadWithFailure:error.localizedDescription completion:completion];
+        return;
+    }
     NSString *name = [NSString stringWithFormat:@"%@%@.json", BackupFilePrefix, [NameFormatter() stringFromDate:NSDate.date]];
-    [self uploadData:data name:name completion:completion];
+    [self uploadSealedData:sealed name:name completion:completion];
 }
 
-- (void)uploadData:(NSData *)data name:(NSString *)name completion:(void (^)(NSString *))completion {
+- (void)uploadSealedData:(NSData *)data name:(NSString *)name completion:(void (^)(NSString *))completion {
     WebDAVClient *client = [self webDAVClient];
     if (!client) {
         [self finishUploadWithFailure:@"请先在“设置 → 备份”中填写 WebDAV 服务器地址" completion:completion];
