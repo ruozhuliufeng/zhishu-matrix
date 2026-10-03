@@ -221,6 +221,10 @@ zsh scripts/test.sh
 
 这是独立的第三方容器，不是 OpenAI 官方客户端。部分第三方身份提供商可能拒绝嵌入式浏览器登录；这种限制由提供商决定。
 
+## 许可证
+
+本项目基于 [MIT 许可证](LICENSE) 开源。
+
 ## 友情链接
 
 - [LINUX DO](https://linux.do)
