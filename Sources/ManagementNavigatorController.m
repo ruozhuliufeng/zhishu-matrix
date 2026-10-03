@@ -18,6 +18,7 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         case ManagementScopeSupplier: return scope.value.length ? NSColor.systemTealColor : NSColor.tertiaryLabelColor;
         case ManagementScopeIncomplete: return NSColor.systemBrownColor;
         case ManagementScopeAuthorizedApp: return NSColor.systemIndigoColor;
+        case ManagementScopeArchived: return NSColor.secondaryLabelColor;
     }
     return NSColor.secondaryLabelColor;
 }
@@ -149,23 +150,25 @@ static NSColor *ScopeTint(ManagementScope *scope) {
     NSArray<Account *> *accounts = store.accounts;
     NSDate *now = NSDate.date;
     NSSet *duplicates = AccountDuplicateIDs(accounts);
+    NSArray<Account *> *visible = store.visibleAccounts;
     NSMutableArray *rows = [NSMutableArray arrayWithObject:@"智能列表"];
     for (ManagementScope *scope in ManagementScope.smartScopes)
-        if (scope.kind != ManagementScopeDuplicates || duplicates.count) [rows addObject:scope];
+        if ((scope.kind != ManagementScopeDuplicates || duplicates.count) &&
+            (scope.kind != ManagementScopeArchived || visible.count < accounts.count)) [rows addObject:scope];
     NSArray<NSString *> *groups = store.groups;
     if (groups.count) {
         [rows addObject:@"分组"];
         for (NSString *group in groups) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeGroup value:group]];
         BOOL ungrouped = NO;
-        for (Account *account in accounts) if (!account.group.length) ungrouped = YES;
+        for (Account *account in visible) if (!account.group.length) ungrouped = YES;
         if (ungrouped) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeGroup value:@""]];
     }
     NSMutableArray<NSString *> *suppliers = [NSMutableArray array];
     BOOL unsupplied = NO;
     for (NSString *supplier in store.suppliers)
-        for (Account *account in accounts)
+        for (Account *account in visible)
             if ([account.supplier isEqualToString:supplier]) { [suppliers addObject:supplier]; break; }
-    for (Account *account in accounts) if (!account.supplier.length) unsupplied = YES;
+    for (Account *account in visible) if (!account.supplier.length) unsupplied = YES;
     if (suppliers.count) {
         [rows addObject:@"供应商"];
         for (NSString *supplier in suppliers) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:supplier]];
@@ -199,7 +202,9 @@ static NSColor *ScopeTint(ManagementScope *scope) {
     [self.tableView reloadData];
     self.applyingSelection = NO;
     [self reflectSelection];
-    self.countLabel.stringValue = [NSString stringWithFormat:@"%lu 个账号", (unsigned long)accounts.count];
+    self.countLabel.stringValue = visible.count < accounts.count
+        ? [NSString stringWithFormat:@"%lu 个账号 · 已归档 %lu", (unsigned long)visible.count, (unsigned long)(accounts.count - visible.count)]
+        : [NSString stringWithFormat:@"%lu 个账号", (unsigned long)accounts.count];
 }
 
 - (void)reflectSelection {

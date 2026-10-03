@@ -16,6 +16,14 @@ double const AccountLowQuotaPercent = 20;
 }
 
 + (instancetype)statusForAccount:(Account *)account now:(NSDate *)now {
+    if (account.archived)
+        return [[self alloc] initWithKind:AccountStatusArchived tone:AccountStatusToneNeutral title:@"已归档" symbol:@"archivebox"];
+    if (account.retired) {
+        NSDictionary *symbols = @{@"disabled": @"pause.circle", @"banned": @"nosign", @"transferred": @"arrow.right.circle"};
+        return [[self alloc] initWithKind:AccountStatusRetired
+            tone:[account.lifecycle isEqualToString:@"banned"] ? AccountStatusToneCritical : AccountStatusToneNeutral
+            title:AccountLifecycleTitle(account.lifecycle) symbol:symbols[account.lifecycle]];
+    }
     AccountExpiryState state = [account expiryStateFromDate:now];
     NSNumber *lowest = account.usage.lowestRemainingPercent;
     if (account.signedIn && !account.signedIn.boolValue)
@@ -38,12 +46,15 @@ double const AccountLowQuotaPercent = 20;
     if (missing.count)
         return [[self alloc] initWithKind:AccountStatusIncomplete tone:AccountStatusToneNeutral
             title:[NSString stringWithFormat:@"资料缺 %lu 项", (unsigned long)missing.count] symbol:@"list.bullet.clipboard"];
+    if ([account.lifecycle isEqualToString:@"idle"])
+        return [[self alloc] initWithKind:AccountStatusIdle tone:AccountStatusToneNeutral title:@"闲置" symbol:@"moon.zzz"];
     return [[self alloc] initWithKind:AccountStatusNormal tone:AccountStatusToneNeutral title:@"正常" symbol:@"checkmark.circle"];
 }
 @end
 
 NSArray<NSString *> *AccountMissingFields(Account *account, NSDate *now) {
     NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    if (!account.tracked) return missing;
     if (!account.email.length) [missing addObject:@"邮箱"];
     if (!account.plan) [missing addObject:@"订阅级别"];
     if (!account.isPaid) return missing;
@@ -68,7 +79,7 @@ NSDictionary<NSString *, NSArray<Account *> *> *AccountDuplicateEmails(NSArray<A
     NSMutableDictionary<NSString *, NSMutableArray<Account *> *> *byEmail = [NSMutableDictionary dictionary];
     for (Account *account in accounts) {
         NSString *email = account.email.lowercaseString;
-        if (!email.length) continue;
+        if (!email.length || account.archived) continue;
         if (!byEmail[email]) byEmail[email] = [NSMutableArray array];
         [byEmail[email] addObject:account];
     }
@@ -124,6 +135,8 @@ void AccountAlertsForgetSignIn(NSMutableDictionary *state, NSArray<NSString *> *
 
 NSArray<NSDictionary<NSString *, NSString *> *> *AccountAlertsDue(NSArray<Account *> *accounts, NSDate *now,
     NSMutableDictionary *state, AccountAlertKinds kinds) {
+    // Archived and retired accounts are no longer looked after.
+    accounts = [accounts filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"tracked == YES"]];
     NSMutableArray *alerts = [NSMutableArray array];
     NSMutableDictionary *quota = MutableEntry(state, @"quota");
     NSMutableArray *signedIn = MutableList(state, @"signedIn");
@@ -241,7 +254,7 @@ NSArray<NSDictionary<NSString *, NSString *> *> *AccountAlertsDue(NSArray<Accoun
 
 NSString *AccountUnrecordedRenewal(Account *account, NSDate *now) {
     NSDate *expiry = AccountDateFromDayString(account.expiresAt);
-    if (!account.isPaid || !account.autoRenew.boolValue || !expiry) return nil;
+    if (!account.tracked || !account.isPaid || !account.autoRenew.boolValue || !expiry) return nil;
     NSCalendar *calendar = NSCalendar.currentCalendar;
     NSDate *today = [calendar startOfDayForDate:now];
     NSDate *renewal = [expiry compare:today] != NSOrderedDescending ? expiry
@@ -356,7 +369,7 @@ static void Add(NSMutableDictionary<NSString *, NSNumber *> *totals, NSString *k
         // the expiry for subscriptions renewed by hand.
         NSString *date = @"";
         NSDate *expiry = AccountDateFromDayString(account.expiresAt);
-        if (account.isPaid && expiry) {
+        if (account.tracked && account.isPaid && expiry) {
             if (account.autoRenew.boolValue) {
                 NSDateComponents *from = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth fromDate:expiry];
                 NSInteger shift = (target.year - from.year) * 12 + (target.month - from.month);
@@ -434,7 +447,7 @@ NSString *AccountRenewalCalendar(NSArray<Account *> *accounts) {
                                           @"CALSCALE:GREGORIAN", @"X-WR-CALNAME:智枢矩阵 · 续费与到期"] mutableCopy];
     for (Account *account in accounts) {
         NSDate *date = AccountDateFromDayString(account.expiresAt);
-        if (!date) continue;
+        if (!date || !account.tracked) continue;
         BOOL renews = account.autoRenew.boolValue;
         NSString *price = account.monthlyPrice ? AccountFormatMoney(account.monthlyPrice, account.currency) : nil;
         NSString *summary = renews

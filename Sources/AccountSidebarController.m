@@ -232,7 +232,7 @@ static NSUserInterfaceItemIdentifier const GroupCellIdentifier = @"GroupCell";
 - (void)reloadAccounts {
     if (!self.isViewLoaded) return;
     AccountStore *store = self.coordinator.store;
-    NSArray<Account *> *accounts = store.accounts;
+    NSArray<Account *> *accounts = store.visibleAccounts;
     NSMutableArray<Account *> *visible = [NSMutableArray array];
     for (Account *account in accounts)
         if ([account matchesSearch:self.searchField.stringValue]) [visible addObject:account];

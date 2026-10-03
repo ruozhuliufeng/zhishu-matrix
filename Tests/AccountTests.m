@@ -947,6 +947,95 @@ static void TestNetworkDiagnosis(void) {
     CHECK(NetworkDiagnosis.standardChecks.firstObject.readsTrace, "the first check reads the exit region");
 }
 
+static void TestLifecycleAndArchive(void) {
+    NSDate *now = AccountDateFromDayString(@"2026-10-02");
+    NSDictionary *paid = @{@"name": @"付费号", @"email": @"paid@example.com", @"plan": @"Plus", @"expiresAt": @"2026-10-01",
+        @"autoRenew": @YES, @"monthlyPrice": @158, @"currency": @"CNY", @"supplier": @"iOS", @"paymentMethod": @"礼品卡 / 余额",
+        @"createdAt": @"2026-08-01T00:00:00Z",
+        @"payments": @[@{@"date": @"2026-09-01", @"amount": @158, @"currency": @"CNY"}]};
+    Account *active = [[Account alloc] initWithDictionary:[paid mutableCopy]];
+    CHECK(active.lifecycle.length == 0 && !active.archived && !active.retired && active.tracked, "accounts start in use");
+    CHECK(AccountUnrecordedRenewal(active, now) != nil, "an active account expects its renewal to be recorded");
+
+    NSMutableDictionary *bannedRecord = [paid mutableCopy];
+    bannedRecord[@"lifecycle"] = @"Banned";
+    bannedRecord[@"lifecycleChangedAt"] = @"2026-09-20T08:00:00Z";
+    Account *banned = [[Account alloc] initWithDictionary:bannedRecord];
+    CHECK([banned.lifecycle isEqualToString:@"banned"] && banned.retired && !banned.tracked, "reads the lifecycle");
+    CHECK([banned.dictionaryRepresentation[@"lifecycle"] isEqualToString:@"banned"] &&
+        [banned.dictionaryRepresentation[@"lifecycleChangedAt"] isEqualToString:@"2026-09-20T08:00:00Z"], "saves the lifecycle");
+    AccountStatus *bannedStatus = [AccountStatus statusForAccount:banned now:now];
+    CHECK(bannedStatus.kind == AccountStatusRetired && [bannedStatus.title isEqualToString:@"已封禁"] &&
+        bannedStatus.tone == AccountStatusToneCritical, "a banned account shows as banned");
+    CHECK(AccountMissingFields(banned, now).count == 0 && AccountUnrecordedRenewal(banned, now) == nil,
+        "retired accounts need no details or payments");
+    CHECK([banned matchesSearch:@"封禁"], "finds accounts by lifecycle");
+
+    Account *odd = [[Account alloc] initWithDictionary:@{@"name": @"x", @"lifecycle": @"sold"}];
+    CHECK(odd.lifecycle.length == 0 && !odd.dictionaryRepresentation[@"lifecycle"], "ignores unknown lifecycles");
+    Account *idle = [[Account alloc] initWithDictionary:@{@"name": @"闲置号", @"email": @"idle@example.com", @"plan": @"Free",
+        @"lifecycle": @"idle"}];
+    CHECK(idle.tracked && [AccountStatus statusForAccount:idle now:now].kind == AccountStatusIdle, "idle accounts stay tracked");
+    CHECK([AccountLifecycleTitle(@"transferred") isEqualToString:@"已转让"] && [AccountLifecycleTitle(@"") isEqualToString:@"使用中"],
+        "titles lifecycles");
+
+    NSMutableDictionary *archivedRecord = [paid mutableCopy];
+    archivedRecord[@"archivedAt"] = @"2026-09-30T00:00:00Z";
+    archivedRecord[@"email"] = @"PAID@example.com";
+    Account *archived = [[Account alloc] initWithDictionary:archivedRecord];
+    CHECK(archived.archived && !archived.tracked && [AccountStatus statusForAccount:archived now:now].kind == AccountStatusArchived,
+        "reads the archive date");
+    CHECK([archived.exportRepresentation[@"archivedAt"] isEqualToString:@"2026-09-30T00:00:00Z"], "exports the archive date");
+    Account *legacyArchived = [[Account alloc] initWithDictionary:@{@"name": @"y", @"archived": @YES}];
+    CHECK(legacyArchived.archived, "accepts a plain archived flag");
+    CHECK(AccountDuplicateEmails(@[active, archived]).count == 0, "archived accounts don't count as duplicates");
+
+    NSMutableDictionary *state = [NSMutableDictionary dictionary];
+    banned.usage = UsageWith(0, 99);
+    banned.signedIn = @YES;
+    AccountAlertKinds all = AccountAlertQuota | AccountAlertRenewal | AccountAlertSignedOut;
+    CHECK(AccountAlertsDue(@[banned, archived], now, state, all).count == 0, "no reminders for retired or archived accounts");
+
+    AccountStore *store = TemporaryStore(@"lifecycle.json");
+    [store load:nil];
+    Account *one = [store addAccountNamed:@"一" group:@"旧号"];
+    one.plan = @"Plus"; one.monthlyPrice = @158; one.currency = @"CNY";
+    Account *two = [store addAccountNamed:@"二" group:nil];
+    two.plan = @"Pro 200"; two.monthlyPrice = @1598; two.currency = @"CNY"; two.lifecycle = @"disabled";
+    Account *three = [store addAccountNamed:@"三" group:@"归档组"];
+    three.plan = @"Plus"; three.monthlyPrice = @20; three.currency = @"USD"; three.archivedAt = now;
+    CHECK(store.visibleAccounts.count == 2 && store.archivedAccounts.count == 1 && store.trackedAccounts.count == 1,
+        "splits visible, archived and tracked accounts");
+    CHECK([store.monthlySpendByCurrency isEqualToDictionary:@{@"CNY": @158}], "monthly spend counts tracked accounts only");
+    CHECK(![store.groups containsObject:@"归档组"], "groups of archived accounts leave the lists");
+    CHECK([store save:nil] && [store load:nil] && [store accountWithID:three.identifier].archived &&
+        [[store accountWithID:two.identifier].lifecycle isEqualToString:@"disabled"], "lifecycle and archive survive saving");
+
+    NSSet *none = [NSSet set];
+    ManagementScope *archive = [ManagementScope scopeWithKind:ManagementScopeArchived value:nil];
+    CHECK([archive includesAccount:archived now:now duplicateIDs:none] && ![archive includesAccount:active now:now duplicateIDs:none],
+        "the archive lists archived accounts");
+    CHECK(![ManagementScope.all includesAccount:archived now:now duplicateIDs:none], "other lists leave archived accounts out");
+    ManagementScope *signedOut = [ManagementScope scopeWithKind:ManagementScopeSignedOut value:nil];
+    banned.signedIn = @NO;
+    CHECK(![signedOut includesAccount:banned now:now duplicateIDs:none] && [ManagementScope.all includesAccount:banned now:now duplicateIDs:none],
+        "retired accounts drop out of reminder lists only");
+    CHECK([[ManagementScope scopeFromString:archive.stringValue] isEqual:archive] && [archive.title isEqualToString:@"已归档"],
+        "the archive scope round-trips");
+
+    NSArray *rows = [AccountExpenseReport reconciliationForAccounts:@[archived] month:AccountDateFromDayString(@"2026-09-15")
+        now:now rates:@{@"CNY": @1}];
+    CHECK(rows.count == 1 && [rows[0][@"state"] isEqualToString:@"extra"] && [rows[0][@"date"] length] == 0,
+        "archived accounts expect no charges but keep their payments");
+    AccountExpenseReport *report = [AccountExpenseReport reportForAccounts:@[archived] year:2026 rates:@{@"CNY": @1}];
+    CHECK(report.count == 1 && fabs(report.total - 158) < 0.001, "reports keep archived payments");
+
+    Account *incoming = [[Account alloc] initWithDictionary:@{@"name": @"付费号", @"lifecycle": @"transferred",
+        @"archivedAt": @"2026-10-01T00:00:00Z"}];
+    [active applyProfileFrom:incoming];
+    CHECK([active.lifecycle isEqualToString:@"transferred"] && active.archived, "imports bring the lifecycle and archive");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -972,6 +1061,7 @@ int main(void) {
         TestPaymentsDue();
         TestExpenseReport();
         TestNetworkDiagnosis();
+        TestLifecycleAndArchive();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

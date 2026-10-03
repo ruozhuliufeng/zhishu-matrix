@@ -51,6 +51,10 @@ static NSString *SourceName(NSString *source, id value) {
 @property (nonatomic, strong) DeskPillView *expiryPill;
 @property (nonatomic, strong) DeskPillView *statusPill;
 @property (nonatomic, strong) NSTextField *duplicateLabel;
+@property (nonatomic, strong) NSTextField *archiveBanner;
+@property (nonatomic, strong) NSPopUpButton *lifecyclePopup;
+@property (nonatomic, strong) NSTextField *lifecycleHint;
+@property (nonatomic, strong) NSButton *archiveButton;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSStackView *> *sectionBodies;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSButton *> *sectionHeaders;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSTextField *> *sectionSummaries;
@@ -246,6 +250,9 @@ static NSString *SourceName(NSString *source, id value) {
     self.expiryPill = [DeskPillView new];
     NSStackView *pills = [NSStackView stackViewWithViews:@[self.planPill, self.statusPill, self.expiryPill]];
     pills.spacing = 6;
+    self.archiveBanner = [NSTextField wrappingLabelWithString:@""];
+    self.archiveBanner.font = [NSFont systemFontOfSize:11];
+    self.archiveBanner.textColor = NSColor.secondaryLabelColor;
     self.duplicateLabel = [NSTextField wrappingLabelWithString:@""];
     self.duplicateLabel.font = [NSFont systemFontOfSize:11];
     self.duplicateLabel.textColor = NSColor.systemOrangeColor;
@@ -257,6 +264,17 @@ static NSString *SourceName(NSString *source, id value) {
     ((NSButtonCell *)self.completenessButton.cell).lineBreakMode = NSLineBreakByWordWrapping;
 
     // Profile
+    self.lifecyclePopup = [NSPopUpButton new];
+    for (NSString *lifecycle in AccountLifecycles()) {
+        [self.lifecyclePopup addItemWithTitle:AccountLifecycleTitle(lifecycle)];
+        self.lifecyclePopup.lastItem.representedObject = lifecycle;
+    }
+    self.lifecyclePopup.target = self;
+    self.lifecyclePopup.action = @selector(lifecycleChosen:);
+    self.lifecyclePopup.toolTip = @"已停用、已封禁、已转让的账号不再提醒续费和额度，不计入每月支出和资料完整度";
+    self.lifecycleHint = [NSTextField wrappingLabelWithString:@""];
+    self.lifecycleHint.font = [NSFont systemFontOfSize:11];
+    self.lifecycleHint.textColor = NSColor.secondaryLabelColor;
     self.nameField = [NSTextField new];
     self.nameField.placeholderString = @"账号名称";
     self.nameField.delegate = self;
@@ -503,10 +521,12 @@ static NSString *SourceName(NSString *source, id value) {
     sessionButton.toolTip = @"读取当前账号的 chatgpt.com/api/auth/session 响应";
     NSButton *clearButton = DeskButton(@"清除登录数据…", @"rectangle.portrait.and.arrow.right", self, @selector(clearLoginData:));
     clearButton.toolTip = @"退出此账号在本机的登录，保留账号资料";
+    self.archiveButton = DeskButton(@"归档账号", @"archivebox", self, @selector(toggleArchive:));
     NSButton *deleteButton = DeskButton(@"删除账号…", @"trash", self, @selector(deleteAccount:));
     deleteButton.contentTintColor = NSColor.systemRedColor;
 
     NSArray<NSView *> *fullWidth = @[
+        self.archiveBanner,
         self.duplicateLabel,
         self.completenessButton,
         [self sectionWithID:@"usage" title:@"用量" views:@[self.shortRow, self.longRow, self.trendCaption, self.sparkline,
@@ -515,6 +535,7 @@ static NSString *SourceName(NSString *source, id value) {
             [self fieldWithCaption:@"名称" control:self.nameField],
             [self fieldWithCaption:@"邮箱" control:self.emailField],
             [self fieldWithCaption:@"分组" control:self.groupBox],
+            [self fieldWithCaption:@"状态" control:self.lifecyclePopup], self.lifecycleHint,
             [self fieldWithCaption:@"标签" control:self.tagsField]]],
         [self sectionWithID:@"subscription" title:@"订阅" views:@[
             [self fieldWithCaption:@"级别" control:self.planPicker],
@@ -534,7 +555,7 @@ static NSString *SourceName(NSString *source, id value) {
         [self sectionWithID:@"notes" title:@"备注" views:@[notesScroll]],
         [self sectionWithID:@"record" title:@"记录" views:@[self.recordLabel]],
         DeskSeparator(),
-        sessionButton, clearButton, deleteButton
+        sessionButton, clearButton, self.archiveButton, deleteButton
     ];
     [stack addArrangedSubview:header];
     [stack addArrangedSubview:pills];
@@ -547,6 +568,7 @@ static NSString *SourceName(NSString *source, id value) {
     [stack setCustomSpacing:10 afterView:header];
     [stack setCustomSpacing:6 afterView:sessionButton];
     [stack setCustomSpacing:6 afterView:clearButton];
+    [stack setCustomSpacing:6 afterView:self.archiveButton];
     NSStackView *usageBody = self.sectionBodies[@"usage"];
     [usageBody setCustomSpacing:8 afterView:self.shortRow];
     [usageBody setCustomSpacing:4 afterView:self.trendCaption];
@@ -638,7 +660,7 @@ static NSString *SourceName(NSString *source, id value) {
     AccountExpiryState state = [account expiryStateFromDate:now];
     self.expiryPill.text = state == AccountExpiryStateUnknown || status.kind == AccountStatusExpired ||
         status.kind == AccountStatusExpiringSoon ? @"" : [account expiryDescriptionFromDate:now];
-    self.expiryPill.tintColor = DeskColorForExpiry(state);
+    self.expiryPill.tintColor = account.tracked ? DeskColorForExpiry(state) : NSColor.systemGrayColor;
     NSArray<Account *> *twins = AccountDuplicateEmails(self.coordinator.store.accounts)[account.email.lowercaseString];
     NSMutableArray *twinNames = [NSMutableArray array];
     for (Account *twin in twins) if (twin != account) [twinNames addObject:[NSString stringWithFormat:@"“%@”", twin.name]];
@@ -646,6 +668,22 @@ static NSString *SourceName(NSString *source, id value) {
     self.duplicateLabel.stringValue = twinNames.count
         ? [NSString stringWithFormat:@"⚠︎ 此邮箱也用于 %@，可能是重复添加的账号", [twinNames componentsJoinedByString:@"、"]] : @"";
 
+    NSDateFormatter *day = [NSDateFormatter new];
+    day.dateFormat = @"yyyy年M月d日";
+    self.archiveBanner.hidden = !account.archived;
+    self.archiveBanner.stringValue = account.archived ? [NSString stringWithFormat:@"已于 %@归档：不在侧边栏和菜单栏显示，不再提醒，不计入每月支出；"
+        "历史付款仍计入费用报表。", [day stringFromDate:account.archivedAt]] : @"";
+    self.archiveButton.title = account.archived ? @"取消归档" : @"归档账号";
+    self.archiveButton.image = [NSImage imageWithSystemSymbolName:account.archived ? @"tray.and.arrow.up" : @"archivebox"
+        accessibilityDescription:nil];
+    self.archiveButton.toolTip = account.archived ? @"放回账号列表，恢复提醒与统计"
+        : @"不再使用的账号可以归档：从列表中隐藏，保留资料和付款记录";
+    [self.lifecyclePopup selectItemAtIndex:MAX(0, (NSInteger)[AccountLifecycles() indexOfObject:account.lifecycle])];
+    NSString *since = account.lifecycleChangedAt ? [NSString stringWithFormat:@"自 %@起", [day stringFromDate:account.lifecycleChangedAt]] : @"";
+    self.lifecycleHint.stringValue = account.retired
+        ? [since stringByAppendingString:@"不再提醒续费和额度，不计入每月支出、资料完整度和自动刷新。"]
+        : ([account.lifecycle isEqualToString:@"idle"] ? [since stringByAppendingString:@"闲置；提醒和统计照常。"] : @"");
+    self.lifecycleHint.hidden = !self.lifecycleHint.stringValue.length;
     if (![self isEditing:self.nameField]) self.nameField.stringValue = account.name;
     if (![self isEditing:self.emailField]) self.emailField.stringValue = account.email;
     if (![self isEditing:self.groupBox]) {
@@ -728,7 +766,11 @@ static NSString *SourceName(NSString *source, id value) {
     if (usage.longWindow) [quotaSummary addObject:[NSString stringWithFormat:@"周 %.0f%%", usage.longWindow.remainingPercent]];
     if (usage.shortWindow) [quotaSummary addObject:[NSString stringWithFormat:@"5h %.0f%%", usage.shortWindow.remainingPercent]];
     self.sectionSummaries[@"usage"].stringValue = [quotaSummary componentsJoinedByString:@" · "];
-    self.sectionSummaries[@"profile"].stringValue = account.group.length ? account.group : (account.email.length ? account.email : @"");
+    NSString *profileSummary = account.group.length ? account.group : (account.email.length ? account.email : @"");
+    if (account.lifecycle.length)
+        profileSummary = profileSummary.length ? [NSString stringWithFormat:@"%@ · %@", AccountLifecycleTitle(account.lifecycle), profileSummary]
+                                               : AccountLifecycleTitle(account.lifecycle);
+    self.sectionSummaries[@"profile"].stringValue = profileSummary;
     self.sectionSummaries[@"subscription"].stringValue = account.monthlyPrice
         ? [NSString stringWithFormat:@"%@ · %@", account.planTitle, AccountFormatMoney(account.monthlyPrice, account.currency)] : account.planTitle;
     [self reloadAuthorizationsOfAccount:account];
@@ -1483,6 +1525,16 @@ static NSString *SourceName(NSString *source, id value) {
 
 - (void)clearLoginData:(id)sender {
     if (self.accountID) [self.coordinator clearLoginDataForAccountIDs:@[self.accountID]];
+}
+
+- (void)lifecycleChosen:(NSPopUpButton *)sender {
+    if (self.accountID) [self.coordinator setLifecycle:sender.selectedItem.representedObject ?: @"" forAccountIDs:@[self.accountID]];
+}
+
+- (void)toggleArchive:(id)sender {
+    [self commitPendingEdits];
+    Account *account = [self account];
+    if (account) [self.coordinator setArchived:!account.archived forAccountIDs:@[account.identifier]];
 }
 
 - (void)deleteAccount:(id)sender {

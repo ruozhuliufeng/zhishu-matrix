@@ -16,6 +16,7 @@ typedef NS_ENUM(NSInteger, ManagementScopeKind) {
     ManagementScopeSupplier,     // value: supplier, "" = not filled in
     ManagementScopeIncomplete,   // something is missing from the record (AccountMissingFields)
     ManagementScopeAuthorizedApp, // value: third-party app name with an active authorization
+    ManagementScopeArchived,     // the only scope that lists archived accounts
 };
 
 /// One entry of the management sidebar: a smart list, a group or a tag.
@@ -31,6 +32,7 @@ typedef NS_ENUM(NSInteger, ManagementScopeKind) {
 /// The smart lists shown above groups and tags.
 + (NSArray<ManagementScope *> *)smartScopes;
 /// `duplicateIDs` are the identifiers of accounts that share an email (see AccountDuplicateEmails).
+/// Archived accounts only belong to the archived scope; retired ones drop out of the reminder lists.
 - (BOOL)includesAccount:(Account *)account now:(NSDate *)now duplicateIDs:(NSSet<NSString *> *)duplicateIDs;
 /// Persistable form, e.g. "tag:主力".
 @property (nonatomic, readonly) NSString *stringValue;

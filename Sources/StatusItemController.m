@@ -70,7 +70,7 @@ static NSString *QuotaSummary(Account *account) {
     NSUInteger attention = 0;
     NSDate *now = NSDate.date;
     if (!locked)
-        for (Account *account in self.store.accounts)
+        for (Account *account in self.store.trackedAccounts)
             if ([AccountStatus statusForAccount:account now:now].tone == AccountStatusToneCritical) attention++;
     NSImage *image = [NSImage imageWithSystemSymbolName:locked ? @"lock.square" : @"square.grid.3x3.square" accessibilityDescription:@"智枢矩阵"];
     image.template = YES;
@@ -113,13 +113,14 @@ static NSString *QuotaSummary(Account *account) {
         return;
     }
 
-    NSArray<Account *> *accounts = self.store.accounts;
+    NSArray<Account *> *accounts = self.store.visibleAccounts;
+    NSArray<Account *> *tracked = self.store.trackedAccounts;
     NSDate *now = NSDate.date;
     NSDictionary *rates = AccountExchangeRates();
 
     // Accounts that need something done.
     NSMutableArray<NSArray *> *attention = [NSMutableArray array];
-    for (Account *account in accounts) {
+    for (Account *account in tracked) {
         AccountStatus *status = [AccountStatus statusForAccount:account now:now];
         if (status.tone == AccountStatusToneCritical || status.tone == AccountStatusToneWarning) [attention addObject:@[account, status]];
     }
@@ -136,7 +137,7 @@ static NSString *QuotaSummary(Account *account) {
 
     // Renewals that went through without a payment being recorded.
     NSMutableArray<NSArray *> *unrecorded = [NSMutableArray array];
-    for (Account *account in accounts) {
+    for (Account *account in tracked) {
         NSString *date = AccountUnrecordedRenewal(account, now);
         if (date) [unrecorded addObject:@[account, date]];
     }
@@ -161,7 +162,7 @@ static NSString *QuotaSummary(Account *account) {
 
     // Charges and expiries in the next 30 days.
     NSMutableArray<Account *> *upcoming = [NSMutableArray array];
-    for (Account *account in accounts) {
+    for (Account *account in tracked) {
         NSNumber *days = [account daysRemainingFromDate:now];
         if (days && days.integerValue >= 0 && days.integerValue <= 30) [upcoming addObject:account];
     }
@@ -208,7 +209,7 @@ static NSString *QuotaSummary(Account *account) {
     BOOL refreshing = self.isRefreshing && self.isRefreshing();
     NSMenuItem *refresh = [self addTitle:refreshing ? @"正在刷新用量…" : @"刷新全部用量" action:@selector(command:)
         tag:StatusItemCommandRefreshAll to:menu];
-    refresh.enabled = !refreshing && accounts.count > 0;
+    refresh.enabled = !refreshing && tracked.count > 0;
     [menu addItem:[NSMenuItem separatorItem]];
     [self addTitle:@"打开智枢矩阵" action:@selector(command:) tag:StatusItemCommandShowWindow to:menu];
     [self addTitle:@"账号管理" action:@selector(command:) tag:StatusItemCommandShowManagement to:menu];

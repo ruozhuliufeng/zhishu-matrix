@@ -293,7 +293,7 @@ static NSCalendar *Calendar(void) {
     NSMutableArray<CalendarEvent *> *events = [NSMutableArray array];
     for (Account *account in self.accounts) {
         NSDate *due = AccountDateFromDayString(account.expiresAt);
-        if (!due) continue;
+        if (!due || !account.tracked) continue;
         NSInteger from = account.autoRenew.boolValue ? -24 : 0, to = account.autoRenew.boolValue ? 24 : 0;
         for (NSInteger offset = from; offset <= to; offset++) {
             NSDate *day = [calendar startOfDayForDate:[calendar dateByAddingUnit:NSCalendarUnitMonth value:offset toDate:due options:0]];

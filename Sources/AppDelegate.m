@@ -373,6 +373,7 @@
     [self add:@"添加标签…" action:@selector(addTagsToSelected:) key:nil modifiers:0 to:account target:controller];
     [self add:@"设置付款信息…" action:@selector(setPaymentInfoForSelected:) key:nil modifiers:0 to:account target:controller];
     [self add:@"记一笔付款…" action:@selector(recordPaymentForSelected:) key:nil modifiers:0 to:account target:controller];
+    [self add:@"归档" action:@selector(toggleArchiveForSelected:) key:nil modifiers:0 to:account target:controller];
     [self add:@"清除登录数据…" action:@selector(clearSelectedLoginData:) key:nil modifiers:0 to:account target:controller];
     [self add:@"删除账号…" action:@selector(deleteSelectedAccounts:) key:nil modifiers:0 to:account target:controller];
 

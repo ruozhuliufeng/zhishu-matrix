@@ -122,6 +122,11 @@ NSDictionary *_Nullable AccountListedPrice(NSString *_Nullable supplier, NSStrin
 - (NSDictionary *)dictionaryRepresentation;
 @end
 
+/// Lifecycle states in display order: "" (使用中), "idle", "disabled", "banned", "transferred".
+NSArray<NSString *> *AccountLifecycles(void);
+/// "使用中", "闲置", "已停用", "已封禁", "已转让".
+NSString *AccountLifecycleTitle(NSString *_Nullable lifecycle);
+
 /// Locally stored profile of one ChatGPT account. Passwords and tokens are never part of it.
 @interface Account : NSObject
 @property (nonatomic, copy) NSString *identifier;
@@ -154,6 +159,12 @@ NSDictionary *_Nullable AccountListedPrice(NSString *_Nullable supplier, NSStrin
 @property (nonatomic, copy, null_resettable) NSArray<AccountPayment *> *payments;
 /// Most recently authorized first.
 @property (nonatomic, copy, null_resettable) NSArray<AccountAuthorization *> *authorizations;
+/// See AccountLifecycles(); empty while the account is in use.
+@property (nonatomic, copy, null_resettable) NSString *lifecycle;
+/// When `lifecycle` was last changed by hand.
+@property (nonatomic, strong, nullable) NSDate *lifecycleChangedAt;
+/// Set while the account is archived: hidden from lists and left out of reminders and monthly spend.
+@property (nonatomic, strong, nullable) NSDate *archivedAt;
 @property (nonatomic, strong, nullable) NSDate *createdAt;
 @property (nonatomic, strong, nullable) NSDate *lastUsedAt;
 @property (nonatomic, strong, nullable) NSNumber *signedIn;
@@ -162,6 +173,11 @@ NSDictionary *_Nullable AccountListedPrice(NSString *_Nullable supplier, NSStrin
 @property (nonatomic, copy, nullable) NSString *refreshError;
 
 @property (nonatomic, readonly) NSString *planTitle;
+@property (nonatomic, readonly, getter=isArchived) BOOL archived;
+/// Disabled, banned or transferred: no longer used or paid for.
+@property (nonatomic, readonly, getter=isRetired) BOOL retired;
+/// Neither archived nor retired: counted in monthly spend, reminders, completeness and refreshes.
+@property (nonatomic, readonly, getter=isTracked) BOOL tracked;
 @property (nonatomic, readonly, nullable) AccountPayment *lastPayment;
 /// "Google Play · 尾号 1234"; empty when nothing is filled in.
 @property (nonatomic, readonly) NSString *paymentSummary;
@@ -202,6 +218,11 @@ NSDictionary *_Nullable AccountListedPrice(NSString *_Nullable supplier, NSStrin
 @interface AccountStore : NSObject
 @property (nonatomic, readonly) NSURL *fileURL;
 @property (nonatomic, readonly) NSArray<Account *> *accounts;
+/// Accounts that are not archived, in list order.
+@property (nonatomic, readonly) NSArray<Account *> *visibleAccounts;
+@property (nonatomic, readonly) NSArray<Account *> *archivedAccounts;
+/// Accounts that are neither archived nor retired.
+@property (nonatomic, readonly) NSArray<Account *> *trackedAccounts;
 /// Set when `load:` found an unreadable file and copied it aside before starting empty.
 @property (nonatomic, readonly, nullable) NSURL *recoveredBackupURL;
 @property (nonatomic, copy, nullable) void (^saveFailed)(NSError *error);
@@ -225,7 +246,7 @@ NSDictionary *_Nullable AccountListedPrice(NSString *_Nullable supplier, NSStrin
 - (NSArray<NSString *> *)paymentMethods;
 /// Names of third-party apps with an active authorization, sorted.
 - (NSArray<NSString *> *)authorizedApps;
-/// Sum of the monthly prices of paid accounts, per currency.
+/// Sum of the monthly prices of tracked paid accounts, per currency.
 - (NSDictionary<NSString *, NSNumber *> *)monthlySpendByCurrency;
 /// The monthly total in CNY; `missing` receives the currencies without a rate, which are left out.
 - (double)monthlySpendInCNYWithRates:(NSDictionary<NSString *, NSNumber *> *)rates

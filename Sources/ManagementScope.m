@@ -4,7 +4,7 @@
 
 static NSArray<NSString *> *KindNames(void) {
     return @[@"all", @"quota", @"expiring", @"signedout", @"autorenew", @"duplicates", @"group", @"tag", @"supplier",
-             @"incomplete", @"app"];
+             @"incomplete", @"app", @"archived"];
 }
 
 NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
@@ -28,7 +28,8 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
 + (NSArray<ManagementScope *> *)smartScopes {
     NSMutableArray *scopes = [NSMutableArray array];
     for (NSNumber *kind in @[@(ManagementScopeAll), @(ManagementScopeQuotaLow), @(ManagementScopeExpiring), @(ManagementScopeSignedOut),
-                             @(ManagementScopeAutoRenew), @(ManagementScopeIncomplete), @(ManagementScopeDuplicates)])
+                             @(ManagementScopeAutoRenew), @(ManagementScopeIncomplete), @(ManagementScopeDuplicates),
+                             @(ManagementScopeArchived)])
         [scopes addObject:[self scopeWithKind:kind.integerValue value:nil]];
     return scopes;
 }
@@ -61,6 +62,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeSupplier: return self.value.length ? self.value : @"未填写供应商";
         case ManagementScopeIncomplete: return @"资料不完整";
         case ManagementScopeAuthorizedApp: return self.value;
+        case ManagementScopeArchived: return @"已归档";
     }
     return @"";
 }
@@ -78,13 +80,22 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeSupplier: return self.value.length ? @"storefront" : @"questionmark.circle";
         case ManagementScopeIncomplete: return @"list.bullet.clipboard";
         case ManagementScopeAuthorizedApp: return @"person.badge.key";
+        case ManagementScopeArchived: return @"archivebox";
     }
     return @"circle";
 }
 
 - (BOOL)includesAccount:(Account *)account now:(NSDate *)now duplicateIDs:(NSSet<NSString *> *)duplicateIDs {
+    if (self.kind == ManagementScopeArchived) return account.archived;
+    if (account.archived) return NO;
     switch (self.kind) {
-        case ManagementScopeAll: return YES;
+        case ManagementScopeQuotaLow: case ManagementScopeExpiring: case ManagementScopeSignedOut: case ManagementScopeAutoRenew:
+            if (account.retired) return NO;
+            break;
+        default: break;
+    }
+    switch (self.kind) {
+        case ManagementScopeAll: case ManagementScopeArchived: return YES;
         case ManagementScopeQuotaLow: {
             NSNumber *lowest = account.usage.lowestRemainingPercent;
             return lowest && lowest.doubleValue < AccountLowQuotaPercent;

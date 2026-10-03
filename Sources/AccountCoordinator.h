@@ -21,6 +21,10 @@ typedef NS_ENUM(NSInteger, DeskMode) {
 - (void)populateMenu:(NSMenu *)menu forAccountIDs:(NSArray<NSString *> *)identifiers;
 - (void)deleteAccountIDs:(NSArray<NSString *> *)identifiers;
 - (void)clearLoginDataForAccountIDs:(NSArray<NSString *> *)identifiers;
+/// Sets the lifecycle state (see AccountLifecycles()) and saves.
+- (void)setLifecycle:(NSString *)lifecycle forAccountIDs:(NSArray<NSString *> *)identifiers;
+/// Archived accounts leave the lists, reminders and monthly spend; their pages are released.
+- (void)setArchived:(BOOL)archived forAccountIDs:(NSArray<NSString *> *)identifiers;
 - (void)promptGroupForAccountIDs:(NSArray<NSString *> *)identifiers;
 - (void)exportAccountIDs:(nullable NSArray<NSString *> *)identifiers;
 - (void)promptAuthorizationForAccountID:(NSString *)identifier;

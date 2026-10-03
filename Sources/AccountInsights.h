@@ -9,6 +9,10 @@ extern double const AccountLowQuotaPercent;
 
 typedef NS_ENUM(NSInteger, AccountStatusKind) {
     AccountStatusNormal = 0,
+    AccountStatusArchived,
+    /// Disabled, banned or transferred.
+    AccountStatusRetired,
+    AccountStatusIdle,
     /// Profile or payment details are missing (see AccountMissingFields).
     AccountStatusIncomplete,
     AccountStatusRefreshFailed,
@@ -35,7 +39,8 @@ typedef NS_ENUM(NSInteger, AccountStatusTone) {
 @end
 
 /// What is missing from an account's record, in display order: "邮箱", "订阅级别", "续费 / 到期日期", "月费", "币种",
-/// "供应商", "付款方式", "卡尾号", "付款记录", "近 35 天未记付款". Free accounts only need an email and a plan.
+/// "供应商", "付款方式", "卡尾号", "付款记录", "近 35 天未记付款". Free accounts only need an email and a plan;
+/// archived and retired accounts need nothing.
 NSArray<NSString *> *AccountMissingFields(Account *account, NSDate *now);
 
 /// The latest renewal of an auto-renewing paid account with no payment recorded within three days before it

@@ -626,6 +626,10 @@ static NSArray<NSArray *> *SortChoices(void) {
 
 - (BOOL)account:(Account *)account passesFiltersAt:(NSDate *)now duplicateIDs:(NSSet *)duplicateIDs {
     if (![self.scope includesAccount:account now:now duplicateIDs:duplicateIDs]) return NO;
+    return [self accountPassesSearchAndPlan:account];
+}
+
+- (BOOL)accountPassesSearchAndPlan:(Account *)account {
     if (![account matchesSearch:self.searchField.stringValue]) return NO;
     NSMenuItem *plan = self.planFilter.selectedItem;
     switch ((PlanFilter)plan.tag) {
@@ -656,6 +660,15 @@ static NSArray<NSArray *> *SortChoices(void) {
     }];
 }
 
+/// The listed accounts; under 全部账号 archived ones too, since what they cost still counts.
+- (NSArray<Account *> *)reportAccounts {
+    if (self.scope.kind != ManagementScopeAll) return self.rows;
+    NSMutableArray<Account *> *accounts = [self.rows mutableCopy];
+    for (Account *account in self.coordinator.store.archivedAccounts)
+        if ([self accountPassesSearchAndPlan:account]) [accounts addObject:account];
+    return accounts;
+}
+
 #pragma mark - Reload
 
 - (void)setScope:(ManagementScope *)scope {
@@ -668,16 +681,18 @@ static NSArray<NSArray *> *SortChoices(void) {
     AccountStore *store = self.coordinator.store;
     if (!self.scope) _scope = ManagementScope.all;
     NSDate *now = NSDate.date;
-    NSArray<Account *> *accounts = store.accounts;
-    NSSet *duplicates = AccountDuplicateIDs(accounts);
+    // Archived accounts appear only in their own list and count nowhere else.
+    BOOL archivedScope = self.scope.kind == ManagementScopeArchived;
+    NSArray<Account *> *accounts = archivedScope ? store.archivedAccounts : store.visibleAccounts;
+    NSSet *duplicates = AccountDuplicateIDs(store.accounts);
     ManagementScope *quotaScope = [ManagementScope scopeWithKind:ManagementScopeQuotaLow value:nil];
     ManagementScope *expiringScope = [ManagementScope scopeWithKind:ManagementScopeExpiring value:nil];
     NSUInteger paid = 0, signedIn = 0, low = 0, expiring = 0, incomplete = 0;
     NSDate *latest = nil;
     NSMutableArray<Account *> *visible = [NSMutableArray array];
     for (Account *account in accounts) {
-        if (account.isPaid) paid++;
-        if (account.signedIn.boolValue) signedIn++;
+        if (account.isPaid && account.tracked) paid++;
+        if (account.signedIn.boolValue && account.tracked) signedIn++;
         if ([quotaScope includesAccount:account now:now duplicateIDs:duplicates]) low++;
         if ([expiringScope includesAccount:account now:now duplicateIDs:duplicates]) expiring++;
         if (AccountMissingFields(account, now).count) incomplete++;
@@ -691,7 +706,8 @@ static NSArray<NSArray *> *SortChoices(void) {
     [summary addObject:filtered
         ? [NSString stringWithFormat:@"%lu / %lu 个账号", (unsigned long)visible.count, (unsigned long)accounts.count]
         : [NSString stringWithFormat:@"%lu 个账号", (unsigned long)accounts.count]];
-    [summary addObject:[NSString stringWithFormat:@"付费 %lu · 已登录 %lu", (unsigned long)paid, (unsigned long)signedIn]];
+    if (archivedScope) [summary addObject:@"不再提醒，不计入每月支出；历史付款仍计入费用报表"];
+    else [summary addObject:[NSString stringWithFormat:@"付费 %lu · 已登录 %lu", (unsigned long)paid, (unsigned long)signedIn]];
     if (self.coordinator.isRefreshingUsage) [summary addObject:@"正在刷新用量…"];
     else if (latest) [summary addObject:[@"用量更新于" stringByAppendingString:DeskRelativeTime(latest)]];
     else if (accounts.count) [summary addObject:@"尚未读取用量"];
@@ -730,7 +746,7 @@ static NSArray<NSArray *> *SortChoices(void) {
     [self.collectionView reloadData];
     self.calendarView.accounts = self.rows;
     self.reportView.supplierOrder = store.suppliers;
-    if (self.viewMode == ManagementViewExpenses) self.reportView.accounts = self.rows;
+    if (self.viewMode == ManagementViewExpenses) self.reportView.accounts = [self reportAccounts];
     self.applyingSelection = NO;
     [self applySelectionToViews];
 
@@ -1035,7 +1051,7 @@ static NSArray<NSArray *> *SortChoices(void) {
         if (state != AccountExpiryStateUnknown) {
             value = [account compactRenewalDescriptionFromDate:now];
             cell.toolTip = [NSString stringWithFormat:@"%@ · %@", account.renewalDescription, [account expiryDescriptionFromDate:now]];
-            label.textColor = state == AccountExpiryStateActive || state == AccountExpiryStateRenewing
+            label.textColor = state == AccountExpiryStateActive || state == AccountExpiryStateRenewing || !account.tracked
                 ? NSColor.labelColor : DeskColorForExpiry(state);
         }
     } else if ([column isEqualToString:@"price"]) {

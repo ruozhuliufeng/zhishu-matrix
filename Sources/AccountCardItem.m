@@ -275,7 +275,8 @@
     } else {
         self.renewalLabel.stringValue = [NSString stringWithFormat:@"%@ · %@", account.renewalDescription,
             [account expiryDescriptionFromDate:now]];
-        self.renewalLabel.textColor = state == AccountExpiryStateActive || state == AccountExpiryStateRenewing
+        // Dates of archived or retired accounts are kept for the record, not as warnings.
+        self.renewalLabel.textColor = state == AccountExpiryStateActive || state == AccountExpiryStateRenewing || !account.tracked
             ? NSColor.secondaryLabelColor : DeskColorForExpiry(state);
     }
     NSNumber *cny = AccountAmountInCNY(account.monthlyPrice, account.currency, AccountExchangeRates());

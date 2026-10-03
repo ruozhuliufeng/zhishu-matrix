@@ -154,7 +154,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
         };
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         NSString *previous = [defaults stringForKey:SelectedAccountDefaultsKey];
-        _selectedAccountID = [store accountWithID:previous] ? previous : store.accounts.firstObject.identifier;
+        _selectedAccountID = [store accountWithID:previous] ? previous : store.visibleAccounts.firstObject.identifier;
         // A ledger opens on the accounts; the ChatGPT pages are there for signing in, authorizing and billing.
         BOOL resume = [defaults integerForKey:LaunchViewDefaultsKey] == 1;
         _mode = !resume || [defaults integerForKey:ModeDefaultsKey] == DeskModeManagement ? DeskModeManagement : DeskModeBrowser;
@@ -267,7 +267,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 
 - (void)storeDidChange:(NSNotification *)notification {
     NSString *selected = self.selectedAccountID;
-    if (![self.store accountWithID:selected]) selected = self.store.accounts.firstObject.identifier;
+    if (![self.store accountWithID:selected]) selected = self.store.visibleAccounts.firstObject.identifier;
     BOOL selectionChanged = !(selected == self.selectedAccountID || [selected isEqualToString:self.selectedAccountID]);
     if (selectionChanged) [self rememberSelection:selected];
     [self.sidebar reloadAccounts];
@@ -386,7 +386,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
     if (self.mode == DeskModeManagement) {
         title = @"账号管理";
         ManagementScope *scope = self.navigator.scope;
-        subtitle = scope.kind == ManagementScopeAll ? [NSString stringWithFormat:@"%lu 个账号", (unsigned long)self.store.accounts.count]
+        subtitle = scope.kind == ManagementScopeAll ? [NSString stringWithFormat:@"%lu 个账号", (unsigned long)self.store.visibleAccounts.count]
             : scope.title;
     } else if (account) {
         title = account.name;
@@ -705,7 +705,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
 
 - (void)readAllBilling:(id)sender {
     NSMutableArray *identifiers = [NSMutableArray array];
-    for (Account *account in self.store.accounts)
+    for (Account *account in self.store.trackedAccounts)
         if (!account.signedIn || account.signedIn.boolValue) [identifiers addObject:account.identifier];
     [self readBillingForAccountIDs:identifiers];
 }
@@ -777,7 +777,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
     if (identifiers.count) [self.refresher refreshAccountIDs:identifiers];
 }
 
-- (void)refreshAllUsage:(id)sender { [self refreshUsageForAccountIDs:[self.store.accounts valueForKey:@"identifier"]]; }
+- (void)refreshAllUsage:(id)sender { [self refreshUsageForAccountIDs:[self.store.trackedAccounts valueForKey:@"identifier"]]; }
 - (void)refreshSelectedUsage:(id)sender { [self refreshUsageForAccountIDs:[self targetAccountIDs]]; }
 
 - (void)refresherStateChanged {
@@ -800,7 +800,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
     if (minutes <= 0) return;
     NSDate *threshold = [NSDate dateWithTimeIntervalSinceNow:-minutes * 60 + 30];
     NSMutableArray<NSString *> *stale = [NSMutableArray array];
-    for (Account *account in self.store.accounts) {
+    for (Account *account in self.store.trackedAccounts) {
         if (account.signedIn && !account.signedIn.boolValue) continue;
         NSDate *attempted = self.usageAttempts[account.identifier];
         if (attempted && [attempted compare:threshold] == NSOrderedDescending) continue;
@@ -1060,22 +1060,27 @@ static BOOL IsChatGPTPage(NSURL *url) {
     }];
 }
 
+/// The selection once `identifiers` leave the list: the selected account, else its neighbour in the sidebar.
+- (nullable NSString *)selectionWithout:(NSArray<NSString *> *)identifiers {
+    NSString *next = self.selectedAccountID;
+    if (![identifiers containsObject:next]) return next;
+    next = nil;
+    NSArray<NSString *> *order = self.sidebar.visibleAccountIDs;
+    NSUInteger index = [order indexOfObject:self.selectedAccountID];
+    if (index != NSNotFound) {
+        for (NSUInteger position = index + 1; position < order.count && !next; position++)
+            if (![identifiers containsObject:order[position]]) next = order[position];
+        for (NSUInteger position = index; position > 0 && !next; position--)
+            if (![identifiers containsObject:order[position - 1]]) next = order[position - 1];
+    }
+    for (Account *account in self.store.visibleAccounts)
+        if (!next && ![identifiers containsObject:account.identifier]) next = account.identifier;
+    return next;
+}
+
 - (void)removeAccounts:(NSArray<Account *> *)accounts {
     NSArray<NSString *> *identifiers = [accounts valueForKey:@"identifier"];
-    NSString *next = self.selectedAccountID;
-    if ([identifiers containsObject:next]) {
-        next = nil;
-        NSArray<NSString *> *order = self.sidebar.visibleAccountIDs;
-        NSUInteger index = [order indexOfObject:self.selectedAccountID];
-        if (index != NSNotFound) {
-            for (NSUInteger position = index + 1; position < order.count && !next; position++)
-                if (![identifiers containsObject:order[position]]) next = order[position];
-            for (NSUInteger position = index; position > 0 && !next; position--)
-                if (![identifiers containsObject:order[position - 1]]) next = order[position - 1];
-        }
-        for (Account *account in self.store.accounts)
-            if (!next && ![identifiers containsObject:account.identifier]) next = account.identifier;
-    }
+    NSString *next = [self selectionWithout:identifiers];
 
     // WebKit only removes a data store once no web view uses it.
     for (AuthorizationWindowController *authorization in self.authorizationWindows.copy)
@@ -1113,6 +1118,57 @@ static BOOL IsChatGPTPage(NSURL *url) {
                 });
             });
         }];
+}
+
+#pragma mark - Status and archive
+
+- (void)setLifecycle:(NSString *)lifecycle forAccountIDs:(NSArray<NSString *> *)identifiers {
+    NSDate *now = NSDate.date;
+    BOOL changed = NO;
+    for (Account *account in [self.store accountsWithIDs:identifiers]) {
+        if ([account.lifecycle isEqualToString:lifecycle ?: @""]) continue;
+        account.lifecycle = lifecycle;
+        account.lifecycleChangedAt = account.lifecycle.length ? now : nil;
+        changed = YES;
+    }
+    if (changed) [self.store commit];
+}
+
+- (void)setArchived:(BOOL)archived forAccountIDs:(NSArray<NSString *> *)identifiers {
+    NSMutableArray<NSString *> *changed = [NSMutableArray array];
+    NSDate *now = NSDate.date;
+    for (Account *account in [self.store accountsWithIDs:identifiers]) {
+        if (account.archived == archived) continue;
+        account.archivedAt = archived ? now : nil;
+        [changed addObject:account.identifier];
+    }
+    if (!changed.count) return;
+    if (archived) {
+        // Archived accounts leave the sidebar; their pages are released and browsing moves on to a neighbour.
+        if (self.mode == DeskModeBrowser) [self rememberSelection:[self selectionWithout:changed]];
+        for (NSString *identifier in changed) {
+            if (self.browser.session == self.sessions[identifier]) [self.browser showSession:nil];
+            [self.sessions[identifier] invalidate];
+            [self.sessions removeObjectForKey:identifier];
+            [self.sessionActivity removeObjectForKey:identifier];
+        }
+    }
+    [self.store commit];
+}
+
+- (void)lifecycleFromMenu:(NSMenuItem *)sender {
+    [self setLifecycle:sender.representedObject[@"lifecycle"] forAccountIDs:sender.representedObject[@"ids"]];
+}
+
+- (void)archiveFromMenu:(NSMenuItem *)sender {
+    [self setArchived:[sender.representedObject[@"archive"] boolValue] forAccountIDs:sender.representedObject[@"ids"]];
+}
+
+- (void)toggleArchiveForSelected:(id)sender {
+    NSArray<Account *> *accounts = [self.store accountsWithIDs:[self targetAccountIDs]];
+    BOOL archive = NO;
+    for (Account *account in accounts) if (!account.archived) archive = YES;
+    [self setArchived:archive forAccountIDs:[accounts valueForKey:@"identifier"]];
 }
 
 - (void)clearLoginDataForAccountIDs:(NSArray<NSString *> *)identifiers {
@@ -1322,9 +1378,9 @@ static BOOL IsChatGPTPage(NSURL *url) {
 
 - (void)exportRenewalCalendar:(id)sender {
     NSArray<Account *> *accounts = self.mode == DeskModeManagement && self.management.selectedAccountIDs.count > 1
-        ? [self.store accountsWithIDs:self.management.selectedAccountIDs] : self.store.accounts;
+        ? [self.store accountsWithIDs:self.management.selectedAccountIDs] : self.store.trackedAccounts;
     NSMutableArray<Account *> *dated = [NSMutableArray array];
-    for (Account *account in accounts) if (account.expiresAt) [dated addObject:account];
+    for (Account *account in accounts) if (account.expiresAt && account.tracked) [dated addObject:account];
     if (!dated.count) {
         [self showError:@"没有可导出的日期" detail:@"请先为账号设置续费 / 到期日期，或读取账单页。"];
         return;
@@ -1407,6 +1463,24 @@ static BOOL IsChatGPTPage(NSURL *url) {
         symbol:@"creditcard" action:@selector(billingFromMenu:) object:ids]];
     if (accounts.count == 1)
         [menu addItem:[self menuItem:@"在浏览中打开账单页" symbol:@"safari" action:@selector(billingPageFromMenu:) object:ids]];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *lifecycleItem = [self menuItem:@"状态" symbol:@"circle.dashed" action:nil object:nil];
+    NSMenu *lifecycleMenu = [NSMenu new];
+    NSSet *currentLifecycles = [NSSet setWithArray:[accounts valueForKey:@"lifecycle"]];
+    for (NSString *lifecycle in AccountLifecycles()) {
+        NSMenuItem *item = [self menuItem:AccountLifecycleTitle(lifecycle) symbol:nil action:@selector(lifecycleFromMenu:)
+            object:@{@"ids": ids, @"lifecycle": lifecycle}];
+        item.state = [currentLifecycles containsObject:lifecycle]
+            ? (currentLifecycles.count == 1 ? NSControlStateValueOn : NSControlStateValueMixed) : NSControlStateValueOff;
+        [lifecycleMenu addItem:item];
+    }
+    lifecycleItem.submenu = lifecycleMenu;
+    [menu addItem:lifecycleItem];
+    BOOL anyActive = NO;
+    for (Account *account in accounts) if (!account.archived) anyActive = YES;
+    [menu addItem:[self menuItem:anyActive ? @"归档" : @"取消归档" symbol:anyActive ? @"archivebox" : @"tray.and.arrow.up"
+        action:@selector(archiveFromMenu:) object:@{@"ids": ids, @"archive": @(anyActive)}]];
     [menu addItem:[NSMenuItem separatorItem]];
 
     NSMenuItem *tagItem = [self menuItem:@"标签" symbol:@"tag" action:nil object:nil];
@@ -1645,18 +1719,19 @@ static BOOL IsChatGPTPage(NSURL *url) {
         return [self targetAccountIDs].count == 1;
     if (action == @selector(readBillingForSelected:) || action == @selector(setPaymentInfoForSelected:))
         return [self targetAccountIDs].count > 0;
-    if (action == @selector(readAllBilling:)) return self.store.accounts.count > 0 && !self.billingReader.isReading;
+    if (action == @selector(readAllBilling:)) return self.store.trackedAccounts.count > 0 && !self.billingReader.isReading;
     if (action == @selector(exportPaymentsCSV:)) {
         for (Account *account in self.store.accounts) if (account.payments.count) return YES;
         return NO;
     }
     if (action == @selector(exportRenewalCalendar:)) {
-        for (Account *account in self.store.accounts) if (account.expiresAt) return YES;
+        for (Account *account in self.store.trackedAccounts) if (account.expiresAt) return YES;
         return NO;
     }
-    if (action == @selector(refreshAllUsage:)) return self.store.accounts.count > 0;
+    if (action == @selector(refreshAllUsage:)) return self.store.trackedAccounts.count > 0;
     if (action == @selector(refreshSelectedUsage:) || action == @selector(addTagsToSelected:)) return [self targetAccountIDs].count > 0;
     if (action == @selector(moveSelectedToGroup:) || action == @selector(clearSelectedLoginData:) ||
+        action == @selector(toggleArchiveForSelected:) ||
         action == @selector(deleteSelectedAccounts:)) return [self targetAccountIDs].count > 0;
     if (action == @selector(exportAccounts:)) return self.store.accounts.count > 0;
     if (action == @selector(releaseBackgroundPages:)) {
@@ -1672,6 +1747,11 @@ static BOOL IsChatGPTPage(NSURL *url) {
     if (action == @selector(showManagement:)) item.state = self.mode == DeskModeManagement ? NSControlStateValueOn : NSControlStateValueOff;
     if (action == @selector(toggleSidebar:)) item.title = self.sidebarItem.isCollapsed ? @"显示侧边栏" : @"隐藏侧边栏";
     if (action == @selector(toggleInspector:)) item.title = self.inspectorItem.isCollapsed ? @"显示账号详情" : @"隐藏账号详情";
+    if (action == @selector(toggleArchiveForSelected:)) {
+        BOOL archive = NO;
+        for (Account *account in [self.store accountsWithIDs:[self targetAccountIDs]]) if (!account.archived) archive = YES;
+        item.title = archive ? @"归档" : @"取消归档";
+    }
     if (action == @selector(deleteSelectedAccounts:)) {
         NSUInteger count = [self targetAccountIDs].count;
         item.title = count > 1 ? [NSString stringWithFormat:@"删除 %lu 个账号…", (unsigned long)count] : @"删除账号…";
@@ -1734,7 +1814,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
     [self.window.toolbar validateVisibleItems];
     BOOL refreshing = self.refresher.isRefreshing;
     self.refreshUsageButton.title = refreshing ? @"正在刷新…" : @"刷新用量";
-    self.refreshUsageButton.enabled = !self.locked && !refreshing && self.store.accounts.count > 0;
+    self.refreshUsageButton.enabled = !self.locked && !refreshing && self.store.trackedAccounts.count > 0;
     self.accountMenuButton.enabled = !self.locked && [self targetAccountIDs].count > 0;
 }
 
