@@ -4,7 +4,7 @@
 
 static NSArray<NSString *> *KindNames(void) {
     return @[@"all", @"quota", @"expiring", @"signedout", @"autorenew", @"duplicates", @"group", @"tag", @"supplier",
-             @"incomplete", @"app", @"archived"];
+             @"incomplete", @"app", @"archived", @"lifecycle"];
 }
 
 NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
@@ -36,7 +36,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
 
 - (BOOL)hasValue {
     return self.kind == ManagementScopeGroup || self.kind == ManagementScopeTag || self.kind == ManagementScopeSupplier ||
-        self.kind == ManagementScopeAuthorizedApp;
+        self.kind == ManagementScopeAuthorizedApp || self.kind == ManagementScopeLifecycle;
 }
 
 - (id)copyWithZone:(NSZone *)zone { return self; }
@@ -63,6 +63,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeIncomplete: return @"资料不完整";
         case ManagementScopeAuthorizedApp: return self.value;
         case ManagementScopeArchived: return @"已归档";
+        case ManagementScopeLifecycle: return AccountLifecycleTitle(self.value);
     }
     return @"";
 }
@@ -81,6 +82,11 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeIncomplete: return @"list.bullet.clipboard";
         case ManagementScopeAuthorizedApp: return @"person.badge.key";
         case ManagementScopeArchived: return @"archivebox";
+        case ManagementScopeLifecycle: {
+            NSDictionary *symbols = @{@"idle": @"moon.zzz", @"disabled": @"pause.circle", @"banned": @"nosign",
+                                      @"transferred": @"arrow.right.circle"};
+            return symbols[self.value] ?: @"checkmark.circle";
+        }
     }
     return @"circle";
 }
@@ -115,6 +121,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
             for (AccountAuthorization *authorization in account.activeAuthorizations)
                 if ([authorization.appName isEqualToString:self.value]) return YES;
             return NO;
+        case ManagementScopeLifecycle: return [account.lifecycle isEqualToString:self.value];
     }
     return YES;
 }

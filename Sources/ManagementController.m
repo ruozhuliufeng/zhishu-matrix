@@ -1047,8 +1047,12 @@ static NSArray<NSArray *> *SortChoices(void) {
             cell.identifier = @"StatusCell";
         }
         AccountStatus *status = [AccountStatus statusForAccount:account now:now];
-        [cell.pill showStatus:status showsNormal:NO];
-        cell.toolTip = account.refreshError.length ? account.refreshError : status.title;
+        [cell.pill showStatus:status showsNormal:YES];
+        // An alert takes the column; the tooltip still names the account's lifecycle.
+        NSString *lifecycle = AccountLifecycleTitle(account.lifecycle);
+        NSString *detail = account.refreshError.length ? account.refreshError : status.title;
+        cell.toolTip = [detail isEqualToString:lifecycle] || status.kind == AccountStatusRetired || status.kind == AccountStatusArchived
+            ? detail : [NSString stringWithFormat:@"%@ · %@", lifecycle, detail];
         return cell;
     }
     if ([column isEqualToString:@"plan"]) {

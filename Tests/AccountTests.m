@@ -1167,6 +1167,28 @@ static void TestListSpend(void) {
     CHECK(AccountMonthlySpendInCNY(@[], rates, nil) == 0, "an empty list costs nothing");
 }
 
+static void TestLifecycleScopes(void) {
+    NSDate *now = AccountDateFromDayString(@"2026-10-04");
+    NSSet *none = [NSSet set];
+    Account *active = [[Account alloc] initWithDictionary:@{@"name": @"在用", @"email": @"a@example.com", @"plan": @"Free"}];
+    Account *idle = [[Account alloc] initWithDictionary:@{@"name": @"闲置", @"plan": @"Free", @"lifecycle": @"idle"}];
+    Account *banned = [[Account alloc] initWithDictionary:@{@"name": @"封禁", @"plan": @"Free", @"lifecycle": @"banned"}];
+    Account *archived = [[Account alloc] initWithDictionary:@{@"name": @"归档", @"plan": @"Free",
+        @"archivedAt": @"2026-10-01T00:00:00Z"}];
+    ManagementScope *inUse = [ManagementScope scopeWithKind:ManagementScopeLifecycle value:@""];
+    ManagementScope *bannedScope = [ManagementScope scopeWithKind:ManagementScopeLifecycle value:@"banned"];
+    CHECK([inUse includesAccount:active now:now duplicateIDs:none] && ![inUse includesAccount:idle now:now duplicateIDs:none] &&
+        ![inUse includesAccount:archived now:now duplicateIDs:none], "the 使用中 list holds accounts in use, not archived ones");
+    CHECK([bannedScope includesAccount:banned now:now duplicateIDs:none] && ![bannedScope includesAccount:active now:now duplicateIDs:none],
+        "lists accounts by lifecycle");
+    CHECK([inUse.title isEqualToString:@"使用中"] && [bannedScope.title isEqualToString:@"已封禁"] && inUse.hasValue,
+        "titles lifecycle lists");
+    CHECK([[ManagementScope scopeFromString:inUse.stringValue] isEqual:inUse] &&
+        [[ManagementScope scopeFromString:@"lifecycle:idle"].title isEqualToString:@"闲置"], "lifecycle lists round-trip");
+    AccountStatus *status = [AccountStatus statusForAccount:active now:now];
+    CHECK(status.kind == AccountStatusNormal && [status.title isEqualToString:@"使用中"], "an account with nothing to flag is 使用中");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -1196,6 +1218,7 @@ int main(void) {
         TestRefundsAndBudget();
         TestBackupCrypto();
         TestListSpend();
+        TestLifecycleScopes();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -17,6 +17,7 @@ typedef NS_ENUM(NSInteger, ManagementScopeKind) {
     ManagementScopeIncomplete,   // something is missing from the record (AccountMissingFields)
     ManagementScopeAuthorizedApp, // value: third-party app name with an active authorization
     ManagementScopeArchived,     // the only scope that lists archived accounts
+    ManagementScopeLifecycle,    // value: lifecycle ("" = 使用中, see AccountLifecycles())
 };
 
 /// One entry of the management sidebar: a smart list, a group or a tag.
@@ -25,7 +26,7 @@ typedef NS_ENUM(NSInteger, ManagementScopeKind) {
 @property (nonatomic, readonly, copy) NSString *value;
 @property (nonatomic, readonly) NSString *title;
 @property (nonatomic, readonly) NSString *symbol;
-/// Groups, tags, suppliers and apps carry a value; smart lists do not.
+/// Groups, tags, suppliers, apps and lifecycles carry a value; smart lists do not.
 @property (nonatomic, readonly) BOOL hasValue;
 + (instancetype)scopeWithKind:(ManagementScopeKind)kind value:(nullable NSString *)value;
 + (instancetype)all;

@@ -19,6 +19,9 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         case ManagementScopeIncomplete: return NSColor.systemBrownColor;
         case ManagementScopeAuthorizedApp: return NSColor.systemIndigoColor;
         case ManagementScopeArchived: return NSColor.secondaryLabelColor;
+        case ManagementScopeLifecycle:
+            if ([scope.value isEqualToString:@"banned"]) return NSColor.systemRedColor;
+            return scope.value.length ? NSColor.systemGrayColor : NSColor.systemGreenColor;
     }
     return NSColor.secondaryLabelColor;
 }
@@ -174,6 +177,13 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         for (NSString *supplier in suppliers) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:supplier]];
         if (unsupplied) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:@""]];
     }
+    if (visible.count) {
+        [rows addObject:@"状态"];
+        NSSet *lifecycles = [NSSet setWithArray:[visible valueForKey:@"lifecycle"]];
+        for (NSString *lifecycle in AccountLifecycles())
+            if ([lifecycles containsObject:lifecycle])
+                [rows addObject:[ManagementScope scopeWithKind:ManagementScopeLifecycle value:lifecycle]];
+    }
     NSArray<NSString *> *apps = store.authorizedApps;
     if (apps.count) {
         [rows addObject:@"第三方应用"];
@@ -282,7 +292,8 @@ static NSColor *ScopeTint(ManagementScope *scope) {
 - (void)menuNeedsUpdate:(NSMenu *)menu {
     [menu removeAllItems];
     ManagementScope *scope = [self scopeAtRow:self.tableView.clickedRow];
-    if (!scope.value.length) return;
+    // Lifecycle rows are fixed states, set per account in the details.
+    if (!scope.value.length || scope.kind == ManagementScopeLifecycle) return;
     NSString *noun = scope.kind == ManagementScopeTag ? @"标签" : (scope.kind == ManagementScopeSupplier ? @"供应商"
         : (scope.kind == ManagementScopeAuthorizedApp ? @"应用" : @"分组"));
     NSMenuItem *rename = [menu addItemWithTitle:[NSString stringWithFormat:@"重命名%@…", noun] action:@selector(renameScope:)

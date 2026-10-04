@@ -48,7 +48,7 @@ double const AccountLowQuotaPercent = 20;
             title:[NSString stringWithFormat:@"资料缺 %lu 项", (unsigned long)missing.count] symbol:@"list.bullet.clipboard"];
     if ([account.lifecycle isEqualToString:@"idle"])
         return [[self alloc] initWithKind:AccountStatusIdle tone:AccountStatusToneNeutral title:@"闲置" symbol:@"moon.zzz"];
-    return [[self alloc] initWithKind:AccountStatusNormal tone:AccountStatusToneNeutral title:@"正常" symbol:@"checkmark.circle"];
+    return [[self alloc] initWithKind:AccountStatusNormal tone:AccountStatusToneNeutral title:@"使用中" symbol:@"checkmark.circle"];
 }
 @end
 
