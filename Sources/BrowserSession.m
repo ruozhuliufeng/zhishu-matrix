@@ -141,7 +141,9 @@ static NSURL *UniqueDownloadURL(NSString *suggestedName) {
 }
 
 - (void)openExternally:(NSURL *)url {
-    BOOL opened = [NSWorkspace.sharedWorkspace openURL:url];
+    // With no app for the scheme macOS would put up its own "no application set" dialog; the caller reports it instead.
+    NSWorkspace *workspace = NSWorkspace.sharedWorkspace;
+    BOOL opened = [workspace URLForApplicationToOpenURL:url] != nil && [workspace openURL:url];
     if (self.externalURLOpened) self.externalURLOpened(self, url, opened);
 }
 
