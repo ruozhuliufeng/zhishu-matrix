@@ -693,13 +693,15 @@ static NSArray<NSArray *> *SortChoices(void) {
     NSDate *latest = nil;
     NSMutableArray<Account *> *visible = [NSMutableArray array];
     for (Account *account in accounts) {
-        if (account.isPaid && account.tracked) paid++;
-        if (account.signedIn.boolValue && account.tracked) signedIn++;
         if ([quotaScope includesAccount:account now:now duplicateIDs:duplicates]) low++;
         if ([expiringScope includesAccount:account now:now duplicateIDs:duplicates]) expiring++;
         if (AccountMissingFields(account, now).count) incomplete++;
         if (account.usage && (!latest || [account.usage.fetchedAt compare:latest] == NSOrderedDescending)) latest = account.usage.fetchedAt;
-        if ([self account:account passesFiltersAt:now duplicateIDs:duplicates]) [visible addObject:account];
+        if (![self account:account passesFiltersAt:now duplicateIDs:duplicates]) continue;
+        [visible addObject:account];
+        // The summary describes the list on screen.
+        if (account.isPaid && account.tracked) paid++;
+        if (account.signedIn.boolValue && account.tracked) signedIn++;
     }
 
     self.scopeLabel.stringValue = self.scope.title;
@@ -721,34 +723,47 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.expiryChip.hidden = expiring == 0 && self.scope.kind != ManagementScopeExpiring;
     self.incompleteChip.text = [NSString stringWithFormat:@"资料不完整 %lu", (unsigned long)incomplete];
     self.incompleteChip.hidden = incomplete == 0 && self.scope.kind != ManagementScopeIncomplete;
-    NSDictionary<NSString *, NSNumber *> *spend = store.monthlySpendByCurrency;
+    // The monthly spend follows the list on screen (list, search and plan filter); the budget covers every account.
+    BOOL narrowed = self.scope.kind != ManagementScopeAll || filtered;
+    NSDictionary<NSString *, NSNumber *> *spend = AccountMonthlySpendByCurrency(visible);
     NSMutableArray<NSString *> *amounts = [NSMutableArray array];
     for (NSString *currency in [spend.allKeys sortedArrayUsingSelector:@selector(compare:)])
         [amounts addObject:AccountFormatMoney(spend[currency], currency)];
     NSArray<NSString *> *missing = nil;
     NSDictionary *rates = AccountExchangeRates();
-    double monthly = [store monthlySpendInCNYWithRates:rates missingCurrencies:&missing];
+    double monthly = AccountMonthlySpendInCNY(visible, rates, &missing);
+    double allMonthly = [store monthlySpendInCNYWithRates:rates missingCurrencies:nil];
     double budget = AccountMonthlyBudget();
     double spent = budget > 0 ? AccountSpentInMonth(store.accounts, now, rates) : 0;
-    BOOL overBudget = budget > 0 && (spent > budget || monthly > budget);
-    self.spendChip.text = !amounts.count ? (overBudget ? @"本月超预算" : @"费用报表")
-        : [NSString stringWithFormat:@"%@/月%@%@", AccountFormatCNY(@(monthly)), missing.count ? @" + 未换算" : @"",
-            overBudget ? @" · 超预算" : @""];
-    self.spendChip.tint = overBudget ? NSColor.systemOrangeColor : NSColor.systemPurpleColor;
-    self.spendChip.symbol = overBudget ? @"exclamationmark.triangle" : @"creditcard";
+    BOOL overBudget = budget > 0 && (spent > budget || allMonthly > budget);
+    // Only the whole list is weighed against the budget; a narrowed list just shows its own total.
+    BOOL flagBudget = overBudget && !narrowed;
+    // When nothing could be converted, the original amount says more than ¥0.00.
+    NSString *amount = monthly == 0 && missing.count == amounts.count && amounts.count
+        ? [NSString stringWithFormat:@"%@/月（未换算）", amounts.firstObject]
+        : [NSString stringWithFormat:@"%@/月%@", AccountFormatCNY(@(monthly)), missing.count ? @" + 未换算" : @""];
+    self.spendChip.text = !amounts.count ? (flagBudget ? @"本月超预算" : @"费用报表")
+        : [amount stringByAppendingString:flagBudget ? @" · 超预算" : @""];
+    self.spendChip.tint = flagBudget ? NSColor.systemOrangeColor : NSColor.systemPurpleColor;
+    self.spendChip.symbol = flagBudget ? @"exclamationmark.triangle" : @"creditcard";
     NSMutableArray<NSString *> *tip = [NSMutableArray array];
+    NSString *listName = narrowed
+        ? [NSString stringWithFormat:@"当前列表（%@ · %lu 个账号）", self.scope.title, (unsigned long)visible.count] : @"全部账号";
     if (amounts.count) {
-        [tip addObject:[NSString stringWithFormat:@"每月支出（按月费折合人民币）：%@", AccountFormatCNY(@(monthly))]];
+        [tip addObject:[NSString stringWithFormat:@"%@每月支出（按月费折合人民币）：%@", listName, AccountFormatCNY(@(monthly))]];
         [tip addObject:[@"原币：" stringByAppendingString:[amounts componentsJoinedByString:@" + "]]];
         if (missing.count)
             [tip addObject:[NSString stringWithFormat:@"%@ 未设汇率，未计入；可在“设置 → 费用”中填写", [missing componentsJoinedByString:@"、"]]];
+    } else if (narrowed) {
+        [tip addObject:[listName stringByAppendingString:@"没有计入每月支出的付费账号"]];
     }
+    if (narrowed) [tip addObject:[@"全部账号每月支出：" stringByAppendingString:AccountFormatCNY(@(allMonthly))]];
     if (budget > 0) {
-        [tip addObject:[NSString stringWithFormat:@"每月预算 %@，本月已付 %@", AccountFormatCNY(@(budget)), AccountFormatCNY(@(spent))]];
+        [tip addObject:[NSString stringWithFormat:@"每月预算 %@（全部账号），本月已付 %@", AccountFormatCNY(@(budget)), AccountFormatCNY(@(spent))]];
         if (spent > budget) [tip addObject:[@"本月已超出预算 " stringByAppendingString:AccountFormatCNY(@(spent - budget))]];
-        else if (monthly > budget) [tip addObject:[@"按月费预计每月超出预算 " stringByAppendingString:AccountFormatCNY(@(monthly - budget))]];
+        else if (allMonthly > budget) [tip addObject:[@"按月费预计每月超出预算 " stringByAppendingString:AccountFormatCNY(@(allMonthly - budget))]];
     }
-    [tip addObject:@"点击查看费用报表"];
+    [tip addObject:narrowed ? @"点击查看当前列表的费用报表" : @"点击查看费用报表"];
     self.spendChip.toolTip = [tip componentsJoinedByString:@"\n"];
     [self updateChipHighlights];
 

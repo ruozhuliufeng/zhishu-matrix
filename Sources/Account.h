@@ -41,6 +41,12 @@ extern NSString *const ExchangeRatesDefaultsKey;
 extern NSNotificationName const ExchangeRatesDidChangeNotification;
 /// The saved rates, always including CNY = 1.
 NSDictionary<NSString *, NSNumber *> *AccountExchangeRates(void);
+@class Account;
+/// Sum of the monthly prices of the tracked paid accounts among `accounts`, per currency.
+NSDictionary<NSString *, NSNumber *> *AccountMonthlySpendByCurrency(NSArray<Account *> *accounts);
+/// That sum in CNY; `missing` receives the currencies without a rate, which are left out.
+double AccountMonthlySpendInCNY(NSArray<Account *> *accounts, NSDictionary<NSString *, NSNumber *> *rates,
+    NSArray<NSString *> *_Nullable *_Nullable missing);
 /// NSUserDefaults key: the monthly budget in CNY; 0 or missing means none. Changes post ExchangeRatesDidChangeNotification.
 extern NSString *const MonthlyBudgetDefaultsKey;
 double AccountMonthlyBudget(void);

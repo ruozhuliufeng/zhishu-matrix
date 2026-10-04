@@ -1142,6 +1142,31 @@ static void TestBackupCrypto(void) {
     CHECK(BackupDecrypt(plain, @"x", &error) == nil && error.code == BackupCryptoErrorUnreadable, "a plain backup is not an envelope");
 }
 
+static void TestListSpend(void) {
+    Account *plus = [[Account alloc] initWithDictionary:@{@"name": @"甲", @"plan": @"Plus", @"monthlyPrice": @158, @"currency": @"CNY",
+        @"supplier": @"iOS"}];
+    Account *pro = [[Account alloc] initWithDictionary:@{@"name": @"乙", @"plan": @"Pro 200", @"monthlyPrice": @1409, @"currency": @"CNY",
+        @"supplier": @"世事宜AI"}];
+    Account *dollars = [[Account alloc] initWithDictionary:@{@"name": @"丙", @"plan": @"Plus", @"monthlyPrice": @20, @"currency": @"USD",
+        @"supplier": @"世事宜AI"}];
+    Account *pesos = [[Account alloc] initWithDictionary:@{@"name": @"丁", @"plan": @"Plus", @"monthlyPrice": @1099, @"currency": @"PHP"}];
+    Account *banned = [[Account alloc] initWithDictionary:@{@"name": @"戊", @"plan": @"Pro 200", @"monthlyPrice": @1409,
+        @"currency": @"CNY", @"supplier": @"世事宜AI", @"lifecycle": @"banned"}];
+    Account *free = [[Account alloc] initWithDictionary:@{@"name": @"己", @"plan": @"Free", @"monthlyPrice": @0, @"currency": @"CNY"}];
+    NSDictionary *rates = @{@"CNY": @1, @"USD": @7};
+    NSArray *reseller = @[pro, dollars, banned];
+    NSArray *missing = nil;
+    CHECK(fabs(AccountMonthlySpendInCNY(reseller, rates, &missing) - (1409 + 140)) < 0.001 && missing.count == 0,
+        "sums one supplier's accounts, leaving out retired ones");
+    NSArray *everyone = @[plus, pro, dollars, pesos, banned, free];
+    NSArray *expectedMissing = @[@"PHP"];
+    CHECK(fabs(AccountMonthlySpendInCNY(everyone, rates, &missing) - (158 + 1409 + 140)) < 0.001 &&
+        [missing isEqualToArray:expectedMissing], "sums every account and lists currencies without a rate");
+    NSDictionary *byCurrency = AccountMonthlySpendByCurrency(reseller);
+    CHECK([byCurrency[@"CNY"] isEqual:@1409] && [byCurrency[@"USD"] isEqual:@20] && byCurrency.count == 2, "keeps the original currencies");
+    CHECK(AccountMonthlySpendInCNY(@[], rates, nil) == 0, "an empty list costs nothing");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -1170,6 +1195,7 @@ int main(void) {
         TestLifecycleAndArchive();
         TestRefundsAndBudget();
         TestBackupCrypto();
+        TestListSpend();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

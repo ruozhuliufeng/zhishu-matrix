@@ -131,6 +131,28 @@ NSDictionary *AccountListedPrice(NSString *supplier, NSString *plan) {
 NSString *const ExchangeRatesDefaultsKey = @"exchangeRatesToCNY";
 NSNotificationName const ExchangeRatesDidChangeNotification = @"ExchangeRatesDidChangeNotification";
 
+NSDictionary<NSString *, NSNumber *> *AccountMonthlySpendByCurrency(NSArray<Account *> *accounts) {
+    NSMutableDictionary<NSString *, NSNumber *> *totals = [NSMutableDictionary dictionary];
+    for (Account *account in accounts) {
+        if (!account.tracked || !account.isPaid || !account.monthlyPrice) continue;
+        NSString *currency = account.currency.length ? account.currency : @"";
+        totals[currency] = @(totals[currency].doubleValue + account.monthlyPrice.doubleValue);
+    }
+    return totals;
+}
+
+double AccountMonthlySpendInCNY(NSArray<Account *> *accounts, NSDictionary<NSString *, NSNumber *> *rates, NSArray<NSString *> **missing) {
+    __block double total = 0;
+    NSMutableOrderedSet *unconverted = [NSMutableOrderedSet orderedSet];
+    [AccountMonthlySpendByCurrency(accounts) enumerateKeysAndObjectsUsingBlock:^(NSString *currency, NSNumber *amount, BOOL *stop) {
+        NSNumber *converted = AccountAmountInCNY(amount, currency, rates);
+        if (converted) total += converted.doubleValue;
+        else [unconverted addObject:currency.length ? currency : @"未填币种"];
+    }];
+    if (missing) *missing = [unconverted.array sortedArrayUsingSelector:@selector(compare:)];
+    return total;
+}
+
 NSString *const MonthlyBudgetDefaultsKey = @"monthlyBudgetCNY";
 
 double AccountMonthlyBudget(void) {
@@ -956,15 +978,7 @@ static NSArray *AccountItemsFromJSON(NSData *data, NSError **error) {
 }
 
 - (double)monthlySpendInCNYWithRates:(NSDictionary<NSString *, NSNumber *> *)rates missingCurrencies:(NSArray<NSString *> **)missing {
-    __block double total = 0;
-    NSMutableOrderedSet *unconverted = [NSMutableOrderedSet orderedSet];
-    [self.monthlySpendByCurrency enumerateKeysAndObjectsUsingBlock:^(NSString *currency, NSNumber *amount, BOOL *stop) {
-        NSNumber *converted = AccountAmountInCNY(amount, currency, rates);
-        if (converted) total += converted.doubleValue;
-        else [unconverted addObject:currency.length ? currency : @"未填币种"];
-    }];
-    if (missing) *missing = [unconverted.array sortedArrayUsingSelector:@selector(compare:)];
-    return total;
+    return AccountMonthlySpendInCNY(_accounts, rates, missing);
 }
 
 static NSString *CSVField(NSString *value) {
@@ -998,15 +1012,7 @@ static NSString *CSVField(NSString *value) {
     return [csv dataUsingEncoding:NSUTF8StringEncoding];
 }
 
-- (NSDictionary<NSString *, NSNumber *> *)monthlySpendByCurrency {
-    NSMutableDictionary<NSString *, NSNumber *> *totals = [NSMutableDictionary dictionary];
-    for (Account *account in self.trackedAccounts) {
-        if (!account.isPaid || !account.monthlyPrice) continue;
-        NSString *currency = account.currency.length ? account.currency : @"";
-        totals[currency] = @(totals[currency].doubleValue + account.monthlyPrice.doubleValue);
-    }
-    return totals;
-}
+- (NSDictionary<NSString *, NSNumber *> *)monthlySpendByCurrency { return AccountMonthlySpendByCurrency(_accounts); }
 
 - (NSData *)exportDataForAccountIDs:(NSArray<NSString *> *)identifiers error:(NSError **)error {
     NSArray<Account *> *accounts = identifiers ? [self accountsWithIDs:identifiers] : _accounts;
