@@ -4,7 +4,7 @@
 
 static NSArray<NSString *> *KindNames(void) {
     return @[@"all", @"quota", @"expiring", @"signedout", @"autorenew", @"duplicates", @"group", @"tag", @"supplier",
-             @"incomplete", @"app", @"archived", @"lifecycle"];
+             @"incomplete", @"app", @"archived", @"lifecycle", @"card"];
 }
 
 NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
@@ -36,7 +36,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
 
 - (BOOL)hasValue {
     return self.kind == ManagementScopeGroup || self.kind == ManagementScopeTag || self.kind == ManagementScopeSupplier ||
-        self.kind == ManagementScopeAuthorizedApp || self.kind == ManagementScopeLifecycle;
+        self.kind == ManagementScopeAuthorizedApp || self.kind == ManagementScopeLifecycle || self.kind == ManagementScopeCard;
 }
 
 - (id)copyWithZone:(NSZone *)zone { return self; }
@@ -64,6 +64,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
         case ManagementScopeAuthorizedApp: return self.value;
         case ManagementScopeArchived: return @"已归档";
         case ManagementScopeLifecycle: return AccountLifecycleTitle(self.value);
+        case ManagementScopeCard: return PaymentCardTitle(nil, self.value);
     }
     return @"";
 }
@@ -87,6 +88,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
                                       @"transferred": @"arrow.right.circle"};
             return symbols[self.value] ?: @"checkmark.circle";
         }
+        case ManagementScopeCard: return @"creditcard";
     }
     return @"circle";
 }
@@ -122,6 +124,7 @@ NSSet<NSString *> *AccountDuplicateIDs(NSArray<Account *> *accounts) {
                 if ([authorization.appName isEqualToString:self.value]) return YES;
             return NO;
         case ManagementScopeLifecycle: return [account.lifecycle isEqualToString:self.value];
+        case ManagementScopeCard: return [account.cardLast4 isEqualToString:self.value];
     }
     return YES;
 }

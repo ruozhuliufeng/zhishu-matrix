@@ -299,6 +299,46 @@ NSDictionary<NSString *, NSString *> *AccountBudgetAlert(NSArray<Account *> *acc
             AccountFormatCNY(@(spent - budget))]};
 }
 
+#pragma mark - Payment cards
+
+NSArray<NSDictionary<NSString *, NSString *> *> *AccountCardAlertsDue(NSArray<PaymentCard *> *cards, NSArray<Account *> *accounts,
+    NSDate *now, NSMutableDictionary *state) {
+    NSMutableArray *alerts = [NSMutableArray array];
+    NSMutableArray *announced = [state[@"cards"] isKindOfClass:NSArray.class] ? [state[@"cards"] mutableCopy] : [NSMutableArray array];
+    for (PaymentCard *card in cards) {
+        AccountExpiryState expiry = [card expiryStateFromDate:now];
+        if (expiry != AccountExpiryStateExpiringSoon && expiry != AccountExpiryStateExpired) continue;
+        NSMutableArray<Account *> *users = [NSMutableArray array];
+        NSUInteger renewing = 0;
+        for (Account *account in accounts) {
+            if (!account.tracked || !account.isPaid || ![account.cardLast4 isEqualToString:card.last4]) continue;
+            [users addObject:account];
+            if (account.autoRenew.boolValue) renewing++;
+        }
+        if (!users.count) continue;
+        BOOL expired = expiry == AccountExpiryStateExpired;
+        NSString *key = [NSString stringWithFormat:@"%@|%@|%@", card.last4, card.expiry, expired ? @"expired" : @"soon"];
+        if ([announced containsObject:key]) continue;
+        [announced addObject:key];
+        NSString *title = PaymentCardTitle(card, card.last4);
+        NSString *who = renewing ? [NSString stringWithFormat:@"%lu 个自动续费账号", (unsigned long)renewing]
+                                 : [NSString stringWithFormat:@"%lu 个账号", (unsigned long)users.count];
+        [alerts addObject:@{@"id": [@"card." stringByAppendingString:key], @"kind": @"card", @"accountID": @"", @"card": card.last4,
+            @"title": expired ? [NSString stringWithFormat:@"%@ 已过期", title] : [NSString stringWithFormat:@"%@ 即将到期", title],
+            @"body": [NSString stringWithFormat:@"%@，%@仍在用这张卡付款。请及时换卡并更新付款来源，以免续费失败。",
+                [card expiryDescriptionFromDate:now], who]}];
+    }
+    // Forget cards whose expiry changed, so a renewed card is announced again when its time comes.
+    NSMutableSet *current = [NSMutableSet set];
+    for (PaymentCard *card in cards) [current addObject:[NSString stringWithFormat:@"%@|%@|", card.last4, card.expiry]];
+    [announced filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *key, NSDictionary *bindings) {
+        NSRange last = [key rangeOfString:@"|" options:NSBackwardsSearch];
+        return last.location != NSNotFound && [current containsObject:[key substringToIndex:NSMaxRange(last)]];
+    }]];
+    state[@"cards"] = announced;
+    return alerts;
+}
+
 #pragma mark - Expense report
 
 static NSArray<NSDictionary *> *SortedGroups(NSDictionary<NSString *, NSNumber *> *totals, NSDictionary<NSString *, NSNumber *> *counts,

@@ -143,6 +143,30 @@ NSString *AccountPaymentKindTitle(NSString *_Nullable kind);
 - (NSDictionary *)dictionaryRepresentation;
 @end
 
+/// Details kept about one payment card, known by its last four digits. Never more of the number than that.
+@interface PaymentCard : NSObject
+@property (nonatomic, copy) NSString *last4;
+/// "招行信用卡"; empty when not named.
+@property (nonatomic, copy, null_resettable) NSString *name;
+/// Last month the card is valid, "yyyy-MM".
+@property (nonatomic, copy, nullable) NSString *expiry;
+@property (nonatomic, copy, null_resettable) NSString *note;
+/// Nothing beyond the digits is filled in.
+@property (nonatomic, readonly) BOOL isBlank;
++ (instancetype)cardWithLast4:(NSString *)last4;
+- (nullable instancetype)initWithDictionary:(NSDictionary *)dictionary;
+- (NSDictionary *)dictionaryRepresentation;
+/// Active, expiring within 30 days, or expired (valid through the end of the expiry month); Unknown without one.
+- (AccountExpiryState)expiryStateFromDate:(NSDate *)now;
+/// "有效期至 2027/05", "2026/11 到期 · 剩 25 天", "已于 2026/09 到期", "未设置有效期".
+- (NSString *)expiryDescriptionFromDate:(NSDate *)now;
+@end
+
+/// "招行信用卡 · 0224", or "尾号 0224" for a card without a name.
+NSString *PaymentCardTitle(PaymentCard *_Nullable card, NSString *last4);
+/// "2027-05" from "2027-5", "05/27", "2027/05"; nil when it is not a month.
+NSString *_Nullable PaymentCardExpiry(NSString *_Nullable text);
+
 /// Lifecycle states in display order: "" (使用中), "idle", "disabled", "banned", "transferred".
 NSArray<NSString *> *AccountLifecycles(void);
 /// "使用中", "闲置", "已停用", "已封禁", "已转让".
@@ -273,6 +297,13 @@ NSString *AccountLifecycleTitle(NSString *_Nullable lifecycle);
 /// The monthly total in CNY; `missing` receives the currencies without a rate, which are left out.
 - (double)monthlySpendInCNYWithRates:(NSDictionary<NSString *, NSNumber *> *)rates
     missingCurrencies:(NSArray<NSString *> *_Nullable *_Nullable)missing;
+/// Saved card details (see PaymentCard), by last four digits.
+@property (nonatomic, readonly) NSArray<PaymentCard *> *cards;
+- (nullable PaymentCard *)cardWithLast4:(nullable NSString *)last4;
+/// Saves a card's details; a card with nothing filled in is forgotten. Call `commit` afterwards.
+- (void)saveCard:(PaymentCard *)card;
+/// Cards used by accounts that are not archived, then saved cards nobody uses: most used first.
+- (NSArray<NSString *> *)cardNumbers;
 /// Every payment of every account as CSV (UTF-8 with BOM, for Excel), newest first.
 - (NSData *)paymentsCSVWithRates:(NSDictionary<NSString *, NSNumber *> *)rates;
 

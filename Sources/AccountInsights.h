@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 
-@class Account, AccountUsageWindow;
+@class Account, AccountUsageWindow, PaymentCard;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -84,6 +84,11 @@ double AccountSpentInMonth(NSArray<Account *> *accounts, NSDate *day, NSDictiona
 /// Announced once a month; `state` remembers it.
 NSDictionary<NSString *, NSString *> *_Nullable AccountBudgetAlert(NSArray<Account *> *accounts, NSDate *now, double budget,
     NSDictionary<NSString *, NSNumber *> *rates, NSMutableDictionary *state);
+
+/// Cards that expire within 30 days, or have expired, while tracked paid accounts still pay with them:
+/// [{id, kind: card, accountID: "", card: last4, title, body}]. Each stage is announced once; `state` remembers it.
+NSArray<NSDictionary<NSString *, NSString *> *> *AccountCardAlertsDue(NSArray<PaymentCard *> *cards, NSArray<Account *> *accounts,
+    NSDate *now, NSMutableDictionary *state);
 
 /// Lowercased email → accounts sharing it, for emails used by more than one account.
 NSDictionary<NSString *, NSArray<Account *> *> *AccountDuplicateEmails(NSArray<Account *> *accounts);

@@ -455,6 +455,104 @@ NSString *AccountPaymentKindTitle(NSString *kind) {
 }
 @end
 
+#pragma mark - Payment cards
+
+NSString *PaymentCardTitle(PaymentCard *card, NSString *last4) {
+    return card.name.length ? [NSString stringWithFormat:@"%@ · %@", card.name, last4] : [@"尾号 " stringByAppendingString:last4 ?: @""];
+}
+
+NSString *PaymentCardExpiry(NSString *text) {
+    NSString *trimmed = Trimmed(text);
+    if (!trimmed.length) return nil;
+    NSRegularExpression *full = [NSRegularExpression regularExpressionWithPattern:@"^(\\d{4})\\s*[-/.年]\\s*(\\d{1,2})\\s*月?$" options:0 error:nil];
+    NSRegularExpression *card = [NSRegularExpression regularExpressionWithPattern:@"^(\\d{1,2})\\s*/\\s*(\\d{2})$" options:0 error:nil];
+    NSInteger year = 0, month = 0;
+    NSTextCheckingResult *match = [full firstMatchInString:trimmed options:0 range:NSMakeRange(0, trimmed.length)];
+    if (match) {
+        year = [[trimmed substringWithRange:[match rangeAtIndex:1]] integerValue];
+        month = [[trimmed substringWithRange:[match rangeAtIndex:2]] integerValue];
+    } else if ((match = [card firstMatchInString:trimmed options:0 range:NSMakeRange(0, trimmed.length)])) {
+        // MM/YY as printed on cards.
+        month = [[trimmed substringWithRange:[match rangeAtIndex:1]] integerValue];
+        year = 2000 + [[trimmed substringWithRange:[match rangeAtIndex:2]] integerValue];
+    }
+    if (month < 1 || month > 12 || year < 2000 || year > 2100) return nil;
+    return [NSString stringWithFormat:@"%04ld-%02ld", (long)year, (long)month];
+}
+
+@implementation PaymentCard
+
++ (instancetype)cardWithLast4:(NSString *)last4 {
+    PaymentCard *card = [self new];
+    card.last4 = AccountCardLast4(last4);
+    return card;
+}
+
+- (instancetype)init {
+    if ((self = [super init])) {
+        _last4 = @"";
+        _name = @"";
+        _note = @"";
+    }
+    return self;
+}
+
+- (instancetype)initWithDictionary:(NSDictionary *)dictionary {
+    if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
+    NSString *last4 = AccountCardLast4(StringOrNil(dictionary[@"last4"]));
+    if (last4.length != 4) return nil;
+    if ((self = [self init])) {
+        _last4 = last4;
+        self.name = StringOrNil(dictionary[@"name"]);
+        self.expiry = PaymentCardExpiry(StringOrNil(dictionary[@"expiry"]));
+        self.note = StringOrNil(dictionary[@"note"]);
+    }
+    return self;
+}
+
+- (void)setName:(NSString *)name { _name = [Trimmed(name) copy]; }
+- (void)setNote:(NSString *)note { _note = [Trimmed(note) copy]; }
+- (BOOL)isBlank { return !self.name.length && !self.expiry && !self.note.length; }
+
+- (NSDictionary *)dictionaryRepresentation {
+    NSMutableDictionary *dictionary = [@{@"last4": self.last4} mutableCopy];
+    if (self.name.length) dictionary[@"name"] = self.name;
+    if (self.expiry) dictionary[@"expiry"] = self.expiry;
+    if (self.note.length) dictionary[@"note"] = self.note;
+    return dictionary;
+}
+
+/// The first day after the card stops working.
+- (NSDate *)endDate {
+    if (!self.expiry) return nil;
+    NSDate *first = AccountDateFromDayString([self.expiry stringByAppendingString:@"-01"]);
+    return first ? [NSCalendar.currentCalendar dateByAddingUnit:NSCalendarUnitMonth value:1 toDate:first options:0] : nil;
+}
+
+- (AccountExpiryState)expiryStateFromDate:(NSDate *)now {
+    NSDate *end = [self endDate];
+    if (!end) return AccountExpiryStateUnknown;
+    NSTimeInterval left = [end timeIntervalSinceDate:now];
+    if (left <= 0) return AccountExpiryStateExpired;
+    return left <= 30 * 86400 ? AccountExpiryStateExpiringSoon : AccountExpiryStateActive;
+}
+
+- (NSString *)expiryDescriptionFromDate:(NSDate *)now {
+    if (!self.expiry) return @"未设置有效期";
+    NSString *month = [self.expiry stringByReplacingOccurrencesOfString:@"-" withString:@"/"];
+    switch ([self expiryStateFromDate:now]) {
+        case AccountExpiryStateExpired: return [NSString stringWithFormat:@"已于 %@ 到期", month];
+        case AccountExpiryStateExpiringSoon: {
+            NSCalendar *calendar = NSCalendar.currentCalendar;
+            NSInteger days = [calendar components:NSCalendarUnitDay fromDate:[calendar startOfDayForDate:now]
+                toDate:[self endDate] options:0].day;
+            return [NSString stringWithFormat:@"%@ 到期 · 剩 %ld 天", month, (long)MAX(1, days)];
+        }
+        default: return [@"有效期至 " stringByAppendingString:month];
+    }
+}
+@end
+
 #pragma mark - Account
 
 NSArray<NSString *> *AccountLifecycles(void) { return @[@"", @"idle", @"disabled", @"banned", @"transferred"]; }
@@ -825,13 +923,57 @@ static NSArray *AccountItemsFromJSON(NSData *data, NSError **error) {
 
 @implementation AccountStore {
     NSMutableArray<Account *> *_accounts;
+    NSMutableDictionary<NSString *, PaymentCard *> *_cards;
     BOOL _readOnly;
+}
+
+/// Card details live next to the account list, so the list itself stays a plain array older versions can read.
+- (NSURL *)cardsURL { return [self.fileURL.URLByDeletingLastPathComponent URLByAppendingPathComponent:@"cards.json"]; }
+
+- (void)mergeCards:(id)items {
+    if (![items isKindOfClass:NSArray.class]) return;
+    for (id item in items) {
+        PaymentCard *incoming = [[PaymentCard alloc] initWithDictionary:item];
+        if (!incoming || incoming.isBlank) continue;
+        PaymentCard *existing = _cards[incoming.last4];
+        if (!existing) { _cards[incoming.last4] = incoming; continue; }
+        if (incoming.name.length) existing.name = incoming.name;
+        if (incoming.expiry) existing.expiry = incoming.expiry;
+        if (incoming.note.length) existing.note = incoming.note;
+    }
+}
+
+- (NSArray<PaymentCard *> *)cards {
+    return [_cards.allValues sortedArrayUsingComparator:^NSComparisonResult(PaymentCard *a, PaymentCard *b) {
+        return [a.last4 compare:b.last4];
+    }];
+}
+
+- (PaymentCard *)cardWithLast4:(NSString *)last4 { return last4.length ? _cards[last4] : nil; }
+
+- (void)saveCard:(PaymentCard *)card {
+    if (card.last4.length != 4) return;
+    if (card.isBlank) [_cards removeObjectForKey:card.last4];
+    else _cards[card.last4] = card;
+}
+
+- (NSArray<NSString *> *)cardNumbers {
+    NSCountedSet *used = [NSCountedSet set];
+    for (Account *account in self.visibleAccounts) if (account.cardLast4.length) [used addObject:account.cardLast4];
+    NSMutableArray<NSString *> *numbers = [used.allObjects mutableCopy];
+    [numbers sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSUInteger left = [used countForObject:a], right = [used countForObject:b];
+        return left != right ? (left > right ? NSOrderedAscending : NSOrderedDescending) : [a compare:b];
+    }];
+    for (PaymentCard *card in self.cards) if (![used containsObject:card.last4]) [numbers addObject:card.last4];
+    return numbers;
 }
 
 - (instancetype)initWithFileURL:(NSURL *)fileURL {
     if ((self = [super init])) {
         _fileURL = fileURL;
         _accounts = [NSMutableArray array];
+        _cards = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -840,6 +982,9 @@ static NSArray *AccountItemsFromJSON(NSData *data, NSError **error) {
 
 - (BOOL)load:(NSError **)error {
     [_accounts removeAllObjects];
+    [_cards removeAllObjects];
+    NSData *cards = [NSData dataWithContentsOfURL:self.cardsURL];
+    if (cards) [self mergeCards:[NSJSONSerialization JSONObjectWithData:cards options:0 error:nil]];
     _recoveredBackupURL = nil;
     _readOnly = NO;
     NSError *readError = nil;
@@ -881,7 +1026,11 @@ static NSArray *AccountItemsFromJSON(NSData *data, NSError **error) {
     if (!data) return NO;
     [NSFileManager.defaultManager createDirectoryAtURL:self.fileURL.URLByDeletingLastPathComponent
         withIntermediateDirectories:YES attributes:nil error:nil];
-    return [data writeToURL:self.fileURL options:NSDataWritingAtomic error:error];
+    if (![data writeToURL:self.fileURL options:NSDataWritingAtomic error:error]) return NO;
+    if (!_cards.count && ![NSFileManager.defaultManager fileExistsAtPath:self.cardsURL.path]) return YES;
+    NSData *cards = [NSJSONSerialization dataWithJSONObject:[self.cards valueForKey:@"dictionaryRepresentation"]
+        options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:error];
+    return cards && [cards writeToURL:self.cardsURL options:NSDataWritingAtomic error:error];
 }
 
 - (void)commit {
@@ -1017,13 +1166,23 @@ static NSString *CSVField(NSString *value) {
 - (NSData *)exportDataForAccountIDs:(NSArray<NSString *> *)identifiers error:(NSError **)error {
     NSArray<Account *> *accounts = identifiers ? [self accountsWithIDs:identifiers] : _accounts;
     NSMutableArray *items = [NSMutableArray arrayWithCapacity:accounts.count];
-    for (Account *account in accounts) [items addObject:account.exportRepresentation];
-    NSDictionary *payload = @{
+    NSMutableArray *cards = [NSMutableArray array];
+    for (Account *account in accounts) {
+        [items addObject:account.exportRepresentation];
+        PaymentCard *card = [self cardWithLast4:account.cardLast4];
+        if (card && ![[cards valueForKey:@"last4"] containsObject:card.last4]) [cards addObject:card.dictionaryRepresentation];
+    }
+    // A full export or backup keeps the details of cards no account uses right now as well.
+    if (!identifiers)
+        for (PaymentCard *card in self.cards)
+            if (![[cards valueForKey:@"last4"] containsObject:card.last4]) [cards addObject:card.dictionaryRepresentation];
+    NSMutableDictionary *payload = [@{
         @"format": @"chatgpt-account-desk",
         @"version": @1,
         @"exportedAt": [TimestampFormatter() stringFromDate:NSDate.date],
         @"accounts": items
-    };
+    } mutableCopy];
+    if (cards.count) payload[@"cards"] = cards;
     return [NSJSONSerialization dataWithJSONObject:payload
         options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys | NSJSONWritingWithoutEscapingSlashes error:error];
 }
@@ -1032,6 +1191,8 @@ static NSString *CSVField(NSString *value) {
     NSArray *items = AccountItemsFromJSON(data, error);
     if (!items) return NO;
     [self mergeItems:items added:added updated:updated];
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if ([json isKindOfClass:NSDictionary.class]) [self mergeCards:json[@"cards"]];
     return YES;
 }
 

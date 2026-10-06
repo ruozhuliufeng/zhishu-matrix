@@ -77,6 +77,9 @@ static NSString *const RecordPaymentAction = @"record-payment";
     NSDictionary *budget = self.budgetEnabled
         ? AccountBudgetAlert(_store.accounts, now, AccountMonthlyBudget(), AccountExchangeRates(), _state) : nil;
     if (budget) [alerts addObject:budget];
+    // Cards running out come with the renewal reminders: an expired card is a failed renewal waiting to happen.
+    if (self.enabledKinds & AccountAlertRenewal)
+        [alerts addObjectsFromArray:AccountCardAlertsDue(_store.cards, _store.accounts, now, _state)];
     [NSUserDefaults.standardUserDefaults setObject:_state forKey:AlertStateDefaultsKey];
     for (NSDictionary *alert in alerts) [self post:alert];
 }
@@ -94,7 +97,8 @@ static NSString *const RecordPaymentAction = @"record-payment";
     content.threadIdentifier = [alert[@"accountID"] length] ? alert[@"accountID"] : alert[@"kind"];
     BOOL payment = [alert[@"kind"] isEqualToString:@"payment"] || [alert[@"kind"] isEqualToString:@"renewal"];
     if (payment) content.categoryIdentifier = PaymentCategory;
-    content.userInfo = @{@"accountID": alert[@"accountID"], @"kind": alert[@"kind"] ?: @"", @"date": alert[@"date"] ?: @""};
+    content.userInfo = @{@"accountID": alert[@"accountID"], @"kind": alert[@"kind"] ?: @"", @"date": alert[@"date"] ?: @"",
+                         @"card": alert[@"card"] ?: @""};
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:alert[@"id"] content:content trigger:nil];
     [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:nil];
 }
@@ -135,6 +139,8 @@ static NSString *const RecordPaymentAction = @"record-payment";
     dispatch_async(dispatch_get_main_queue(), ^{
         if ([info[@"kind"] isEqual:@"budget"]) {
             if (self.openExpenses) self.openExpenses();
+        } else if ([info[@"kind"] isEqual:@"card"]) {
+            if (self.openCard && [info[@"card"] length]) self.openCard(info[@"card"]);
         } else if ([identifier isKindOfClass:NSString.class]) {
             if (record && self.recordPayment) self.recordPayment(identifier, date);
             else if (self.openAccount) self.openAccount(identifier);

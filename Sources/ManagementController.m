@@ -27,7 +27,7 @@ static NSString *const ViewModeDefaultsKey = @"managementViewMode";
 static NSArray<NSArray *> *ColumnSpecs(void) {
     // identifier, title, width, minimum width, sort key, hidden by default
     return @[
-        @[@"name", @"账号", @150, @110, @"name", @NO],
+        @[@"name", @"账号", @215, @170, @"name", @NO],
         @[@"status", @"状态", @96, @76, @"status", @NO],
         @[@"plan", @"订阅", @80, @66, @"plan", @NO],
         @[@"tags", @"标签", @110, @84, @"tags", @NO],
@@ -153,8 +153,11 @@ static NSArray<NSArray *> *SortChoices(void) {
 
 #pragma mark - Table cells
 
+/// Avatar, the account name, and its email on a second line when it says something the name doesn't.
 @interface ManagementNameCell : NSTableCellView
 @property (nonatomic, strong) DeskAvatarView *avatar;
+@property (nonatomic, strong) NSTextField *emailLabel;
+- (void)showName:(NSString *)name email:(NSString *)email;
 @end
 
 @implementation ManagementNameCell
@@ -162,7 +165,16 @@ static NSArray<NSArray *> *SortChoices(void) {
     if ((self = [super initWithFrame:frame])) {
         _avatar = [DeskAvatarView new];
         NSTextField *label = DeskLabel(@"", 13, NSFontWeightMedium);
-        for (NSView *view in @[_avatar, label]) {
+        _emailLabel = DeskLabel(@"", 11, NSFontWeightRegular);
+        // The address's start and domain both matter, so it gives way in the middle.
+        _emailLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        for (NSTextField *field in @[label, _emailLabel])
+            [field setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        NSStackView *lines = [NSStackView stackViewWithViews:@[label, _emailLabel]];
+        lines.orientation = NSUserInterfaceLayoutOrientationVertical;
+        lines.alignment = NSLayoutAttributeLeading;
+        lines.spacing = 1;
+        for (NSView *view in @[_avatar, lines]) {
             view.translatesAutoresizingMaskIntoConstraints = NO;
             [self addSubview:view];
         }
@@ -172,12 +184,29 @@ static NSArray<NSArray *> *SortChoices(void) {
             [_avatar.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
             [_avatar.widthAnchor constraintEqualToConstant:22],
             [_avatar.heightAnchor constraintEqualToConstant:22],
-            [label.leadingAnchor constraintEqualToAnchor:_avatar.trailingAnchor constant:8],
-            [label.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-2],
-            [label.centerYAnchor constraintEqualToAnchor:self.centerYAnchor]
+            [lines.leadingAnchor constraintEqualToAnchor:_avatar.trailingAnchor constant:8],
+            [lines.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-2],
+            [lines.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+            [label.widthAnchor constraintLessThanOrEqualToAnchor:lines.widthAnchor],
+            [_emailLabel.widthAnchor constraintLessThanOrEqualToAnchor:lines.widthAnchor]
         ]];
     }
     return self;
+}
+
+- (void)showName:(NSString *)name email:(NSString *)email {
+    self.textField.stringValue = name;
+    // An address used as the name keeps its domain in view too.
+    self.textField.lineBreakMode = [name containsString:@"@"] ? NSLineBreakByTruncatingMiddle : NSLineBreakByTruncatingTail;
+    BOOL distinct = email.length && [name rangeOfString:email options:NSCaseInsensitiveSearch].location == NSNotFound;
+    self.emailLabel.stringValue = distinct ? email : @"";
+    self.emailLabel.hidden = !distinct;
+}
+
+- (void)setBackgroundStyle:(NSBackgroundStyle)backgroundStyle {
+    [super setBackgroundStyle:backgroundStyle];
+    self.emailLabel.textColor = backgroundStyle == NSBackgroundStyleEmphasized
+        ? [NSColor.alternateSelectedControlTextColor colorWithAlphaComponent:0.8] : NSColor.secondaryLabelColor;
 }
 @end
 
@@ -457,7 +486,7 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.tableView.usesAlternatingRowBackgroundColors = YES;
     self.tableView.allowsMultipleSelection = YES;
     self.tableView.allowsColumnReordering = YES;
-    self.tableView.rowHeight = 34;
+    self.tableView.rowHeight = 38;
     self.tableView.intercellSpacing = NSMakeSize(10, 0);
     self.tableView.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
     NSMenu *headerMenu = [NSMenu new];
@@ -477,7 +506,8 @@ static NSArray<NSArray *> *SortChoices(void) {
     }
     headerMenu.delegate = self;
     self.tableView.headerView.menu = headerMenu;
-    self.tableView.autosaveName = @"AccountManagementTable.v5";
+    // v6: the account column became two lines and wider.
+    self.tableView.autosaveName = @"AccountManagementTable.v6";
     self.tableView.autosaveTableColumns = YES;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -704,7 +734,9 @@ static NSArray<NSArray *> *SortChoices(void) {
         if (account.signedIn.boolValue && account.tracked) signedIn++;
     }
 
-    self.scopeLabel.stringValue = self.scope.title;
+    PaymentCard *scopeCard = self.scope.kind == ManagementScopeCard ? [store cardWithLast4:self.scope.value] : nil;
+    NSString *scopeTitle = self.scope.kind == ManagementScopeCard ? PaymentCardTitle(scopeCard, self.scope.value) : self.scope.title;
+    self.scopeLabel.stringValue = scopeTitle;
     NSMutableArray *summary = [NSMutableArray array];
     BOOL filtered = visible.count != accounts.count;
     [summary addObject:filtered
@@ -712,6 +744,7 @@ static NSArray<NSArray *> *SortChoices(void) {
         : [NSString stringWithFormat:@"%lu 个账号", (unsigned long)accounts.count]];
     if (archivedScope) [summary addObject:@"不再提醒，不计入每月支出；历史付款仍计入费用报表"];
     else [summary addObject:[NSString stringWithFormat:@"付费 %lu · 已登录 %lu", (unsigned long)paid, (unsigned long)signedIn]];
+    if (self.scope.kind == ManagementScopeCard) [summary addObject:[scopeCard expiryDescriptionFromDate:now] ?: @"未设置有效期（双击左侧卡片可填写）"];
     if (self.coordinator.isRefreshingUsage) [summary addObject:@"正在刷新用量…"];
     else if (latest) [summary addObject:[@"用量更新于" stringByAppendingString:DeskRelativeTime(latest)]];
     else if (accounts.count) [summary addObject:@"尚未读取用量"];
@@ -748,7 +781,7 @@ static NSArray<NSArray *> *SortChoices(void) {
     self.spendChip.symbol = flagBudget ? @"exclamationmark.triangle" : @"creditcard";
     NSMutableArray<NSString *> *tip = [NSMutableArray array];
     NSString *listName = narrowed
-        ? [NSString stringWithFormat:@"当前列表（%@ · %lu 个账号）", self.scope.title, (unsigned long)visible.count] : @"全部账号";
+        ? [NSString stringWithFormat:@"当前列表（%@ · %lu 个账号）", scopeTitle, (unsigned long)visible.count] : @"全部账号";
     if (amounts.count) {
         [tip addObject:[NSString stringWithFormat:@"%@每月支出（按月费折合人民币）：%@", listName, AccountFormatCNY(@(monthly))]];
         [tip addObject:[@"原币：" stringByAppendingString:[amounts componentsJoinedByString:@" + "]]];
@@ -1037,7 +1070,11 @@ static NSArray<NSArray *> *SortChoices(void) {
         cell.avatar.name = account.name;
         cell.avatar.seed = account.identifier;
         cell.avatar.statusColor = account.signedIn.boolValue ? NSColor.systemGreenColor : nil;
-        cell.textField.stringValue = account.name;
+        [cell showName:account.name email:account.email];
+        NSMutableArray *details = [NSMutableArray arrayWithObject:account.name];
+        if (account.email.length && ![account.email isEqualToString:account.name]) [details addObject:account.email];
+        if (account.group.length) [details addObject:[@"分组：" stringByAppendingString:account.group]];
+        cell.toolTip = [details componentsJoinedByString:@"\n"];
         return cell;
     }
     if ([column isEqualToString:@"status"]) {
@@ -1128,8 +1165,16 @@ static NSArray<NSArray *> *SortChoices(void) {
     } else if ([column isEqualToString:@"supplier"]) {
         if (account.supplier.length) value = account.supplier;
     } else if ([column isEqualToString:@"card"]) {
-        if (account.cardLast4.length) value = account.cardLast4;
         label.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+        if (account.cardLast4.length) {
+            value = account.cardLast4;
+            PaymentCard *card = [self.coordinator.store cardWithLast4:account.cardLast4];
+            AccountExpiryState expiry = [card expiryStateFromDate:now];
+            cell.toolTip = card ? [NSString stringWithFormat:@"%@\n%@", PaymentCardTitle(card, account.cardLast4),
+                [card expiryDescriptionFromDate:now]] : PaymentCardTitle(nil, account.cardLast4);
+            if (account.tracked && (expiry == AccountExpiryStateExpiringSoon || expiry == AccountExpiryStateExpired))
+                label.textColor = DeskColorForExpiry(expiry);
+        }
     } else if ([column isEqualToString:@"paymentMethod"]) {
         if (account.paymentMethod.length) value = account.paymentMethod;
     } else if ([column isEqualToString:@"lastPayment"]) {

@@ -380,6 +380,13 @@ static BOOL IsChatGPTPage(NSURL *url) {
     [self.management focusTable];
 }
 
+- (void)showCardLast4:(NSString *)last4 {
+    ManagementScope *scope = [ManagementScope scopeWithKind:ManagementScopeCard value:last4];
+    [self switchToMode:DeskModeManagement];
+    self.navigator.scope = scope;
+    self.management.scope = scope;
+}
+
 - (void)showExpenseReport:(id)sender {
     [self switchToMode:DeskModeManagement];
     [self.management showExpenses];
@@ -393,7 +400,7 @@ static BOOL IsChatGPTPage(NSURL *url) {
         title = @"账号管理";
         ManagementScope *scope = self.navigator.scope;
         subtitle = scope.kind == ManagementScopeAll ? [NSString stringWithFormat:@"%lu 个账号", (unsigned long)self.store.visibleAccounts.count]
-            : scope.title;
+            : (scope.kind == ManagementScopeCard ? PaymentCardTitle([self.store cardWithLast4:scope.value], scope.value) : scope.title);
     } else if (account) {
         title = account.name;
         NSMutableArray *parts = [NSMutableArray arrayWithObject:account.plan ?: @"未获取订阅"];

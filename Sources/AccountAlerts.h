@@ -13,6 +13,8 @@ extern NSNotificationName const AlertSettingsDidChangeNotification;
 /// Posts macOS notifications for low or recovered quota, upcoming renewals, lost sign-ins and going over the budget.
 @interface AccountAlerts : NSObject
 @property (nonatomic, copy, nullable) void (^openAccount)(NSString *identifier);
+/// Shows the accounts paying with a card (a card expiry notification was clicked).
+@property (nonatomic, copy, nullable) void (^openCard)(NSString *last4);
 /// Shows the expense report (a budget notification was clicked).
 @property (nonatomic, copy, nullable) void (^openExpenses)(void);
 /// Asks to record a payment for the account; `date` is "yyyy-MM-dd" or empty for today.

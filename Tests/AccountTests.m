@@ -1189,6 +1189,93 @@ static void TestLifecycleScopes(void) {
     CHECK(status.kind == AccountStatusNormal && [status.title isEqualToString:@"使用中"], "an account with nothing to flag is 使用中");
 }
 
+static void TestPaymentCards(void) {
+    CHECK([PaymentCardExpiry(@"2027-5") isEqualToString:@"2027-05"] && [PaymentCardExpiry(@"05/27") isEqualToString:@"2027-05"] &&
+        [PaymentCardExpiry(@"2027年11月") isEqualToString:@"2027-11"] && PaymentCardExpiry(@"13/27") == nil && PaymentCardExpiry(@"") == nil,
+        "reads card expiry months");
+    PaymentCard *card = [[PaymentCard alloc] initWithDictionary:@{@"last4": @"6222 0000 1234 0224", @"name": @" 招行信用卡 ",
+        @"expiry": @"11/26"}];
+    CHECK([card.last4 isEqualToString:@"0224"] && [card.name isEqualToString:@"招行信用卡"] && [card.expiry isEqualToString:@"2026-11"],
+        "keeps only the last four digits");
+    CHECK([PaymentCardTitle(card, @"0224") isEqualToString:@"招行信用卡 · 0224"] && [PaymentCardTitle(nil, @"1881") isEqualToString:@"尾号 1881"],
+        "titles cards");
+    NSDate *october = AccountDateFromDayString(@"2026-10-06");
+    CHECK([card expiryStateFromDate:october] == AccountExpiryStateActive, "more than 30 days left is fine");
+    CHECK([card expiryStateFromDate:AccountDateFromDayString(@"2026-09-01")] == AccountExpiryStateActive &&
+        [[card expiryDescriptionFromDate:AccountDateFromDayString(@"2026-09-01")] isEqualToString:@"有效期至 2026/11"],
+        "a card is valid through its expiry month");
+    CHECK([card expiryStateFromDate:AccountDateFromDayString(@"2026-11-30")] == AccountExpiryStateExpiringSoon &&
+        [[card expiryDescriptionFromDate:AccountDateFromDayString(@"2026-11-30")] isEqualToString:@"2026/11 到期 · 剩 1 天"],
+        "warns in the last 30 days");
+    CHECK([card expiryStateFromDate:AccountDateFromDayString(@"2026-12-01")] == AccountExpiryStateExpired &&
+        [[card expiryDescriptionFromDate:AccountDateFromDayString(@"2026-12-01")] isEqualToString:@"已于 2026/11 到期"], "then it has expired");
+    CHECK([[PaymentCard cardWithLast4:@"1234"] isBlank] && [[PaymentCard cardWithLast4:@"1234"] expiryStateFromDate:october] ==
+        AccountExpiryStateUnknown, "a bare card has no expiry");
+    CHECK([[PaymentCard alloc] initWithDictionary:@{@"last4": @"12"}] == nil, "needs four digits");
+
+    AccountStore *store = TemporaryStore(@"cards-accounts.json");
+    [store load:nil];
+    Account *a = [store addAccountNamed:@"A" group:nil];
+    a.cardLast4 = @"0224"; a.plan = @"Pro 200"; a.monthlyPrice = @1364; a.currency = @"CNY"; a.autoRenew = @YES; a.expiresAt = @"2026-10-19";
+    Account *b = [store addAccountNamed:@"B" group:nil];
+    b.cardLast4 = @"0224"; b.plan = @"Plus"; b.monthlyPrice = @158; b.currency = @"CNY";
+    Account *c = [store addAccountNamed:@"C" group:nil];
+    c.cardLast4 = @"1881";
+    PaymentCard *saved = [PaymentCard cardWithLast4:@"0224"];
+    saved.name = @"招行信用卡";
+    saved.expiry = @"2026-11";
+    [store saveCard:saved];
+    PaymentCard *spare = [PaymentCard cardWithLast4:@"9999"];
+    spare.note = @"备用卡";
+    [store saveCard:spare];
+    NSArray *expectedNumbers = @[@"0224", @"1881", @"9999"];
+    CHECK([store.cardNumbers isEqualToArray:expectedNumbers], "lists cards by use, then unused saved cards");
+    CHECK([store save:nil] && [store load:nil] && [[store cardWithLast4:@"0224"].name isEqualToString:@"招行信用卡"] &&
+        [[store cardWithLast4:@"9999"].note isEqualToString:@"备用卡"], "card details survive saving");
+    NSData *accountsFile = [NSData dataWithContentsOfURL:store.fileURL];
+    CHECK([[NSJSONSerialization JSONObjectWithData:accountsFile options:0 error:nil] isKindOfClass:NSArray.class],
+        "the account list stays a plain array");
+    [store saveCard:[PaymentCard cardWithLast4:@"9999"]];
+    CHECK([store cardWithLast4:@"9999"] == nil, "a blank card is forgotten");
+
+    NSData *exported = [store exportDataForAccountIDs:@[a.identifier] error:nil];
+    NSDictionary *payload = [NSJSONSerialization JSONObjectWithData:exported options:0 error:nil];
+    CHECK([payload[@"cards"] count] == 1 && [payload[@"cards"][0][@"name"] isEqualToString:@"招行信用卡"],
+        "exports the details of the exported accounts' cards");
+    AccountStore *other = TemporaryStore(@"cards-import.json");
+    [other load:nil];
+    CHECK([other importData:exported added:nil updated:nil error:nil] && [[other cardWithLast4:@"0224"].expiry isEqualToString:@"2026-11"],
+        "imports card details");
+
+    NSMutableDictionary *state = [NSMutableDictionary dictionary];
+    NSArray *alerts = AccountCardAlertsDue(store.cards, store.accounts, AccountDateFromDayString(@"2026-11-10"), state);
+    CHECK(alerts.count == 1 && [alerts[0][@"card"] isEqualToString:@"0224"] && [alerts[0][@"title"] isEqualToString:@"招行信用卡 · 0224 即将到期"] &&
+        [alerts[0][@"body"] containsString:@"1 个自动续费账号"], "warns about a card running out under paying accounts");
+    CHECK(AccountCardAlertsDue(store.cards, store.accounts, AccountDateFromDayString(@"2026-11-20"), state).count == 0,
+        "announces each stage once");
+    NSArray *expired = AccountCardAlertsDue(store.cards, store.accounts, AccountDateFromDayString(@"2026-12-02"), state);
+    CHECK(expired.count == 1 && [expired[0][@"title"] containsString:@"已过期"], "announces the expiry too");
+    saved.expiry = @"2029-11";
+    [store saveCard:saved];
+    CHECK(AccountCardAlertsDue(store.cards, store.accounts, AccountDateFromDayString(@"2026-12-02"), state).count == 0 &&
+        [state[@"cards"] count] == 0, "a renewed card clears its announcements");
+    // The store reloaded above, so work on its current objects.
+    [store accountWithID:a.identifier].lifecycle = @"banned";
+    [store accountWithID:b.identifier].archivedAt = NSDate.date;
+    saved.expiry = @"2026-11";
+    CHECK(AccountCardAlertsDue(store.cards, store.accounts, AccountDateFromDayString(@"2026-11-10"), state).count == 0,
+        "cards only used by retired or archived accounts stay quiet");
+
+    NSSet *none = [NSSet set];
+    ManagementScope *cardScope = [ManagementScope scopeWithKind:ManagementScopeCard value:@"0224"];
+    Account *payer = [[Account alloc] initWithDictionary:@{@"name": @"付", @"cardLast4": @"0224"}];
+    Account *otherPayer = [[Account alloc] initWithDictionary:@{@"name": @"他", @"cardLast4": @"1881"}];
+    CHECK([cardScope includesAccount:payer now:october duplicateIDs:none] && ![cardScope includesAccount:otherPayer now:october duplicateIDs:none],
+        "a card's list holds the accounts paying with it");
+    CHECK([[ManagementScope scopeFromString:cardScope.stringValue] isEqual:cardScope] && [cardScope.title isEqualToString:@"尾号 0224"],
+        "card lists round-trip");
+}
+
 int main(void) {
     @autoreleasepool {
         TestLegacyRecords();
@@ -1219,6 +1306,7 @@ int main(void) {
         TestBackupCrypto();
         TestListSpend();
         TestLifecycleScopes();
+        TestPaymentCards();
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

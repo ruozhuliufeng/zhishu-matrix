@@ -5,6 +5,7 @@
 #import "AuthorizationLink.h"
 #import "DeskUI.h"
 #import "NetworkDiagnosisWindowController.h"
+#import "PaymentCardEditor.h"
 #import "NetworkProxy.h"
 
 static NSString *const UnknownPlanTitle = @"未获取";
@@ -74,6 +75,8 @@ static NSString *SourceName(NSString *source, id value) {
 @property (nonatomic, strong) NSComboBox *methodBox;
 @property (nonatomic, strong) NSTextField *cardField;
 @property (nonatomic, strong) NSTextField *cardHint;
+@property (nonatomic, strong) NSButton *cardEditButton;
+@property (nonatomic, strong) NSStackView *cardHintRow;
 @property (nonatomic, strong) NSTableView *paymentsTable;
 @property (nonatomic, strong) NSScrollView *paymentsScroll;
 @property (nonatomic, strong) NSTextField *paymentsSummary;
@@ -402,8 +405,20 @@ static NSString *SourceName(NSString *source, id value) {
     self.cardField = [NSTextField new];
     self.cardField.placeholderString = @"卡号后 4 位";
     self.cardField.delegate = self;
-    self.cardHint = DeskLabel(@"", 11, NSFontWeightRegular);
+    self.cardHint = [NSTextField wrappingLabelWithString:@""];
+    self.cardHint.font = [NSFont systemFontOfSize:11];
     self.cardHint.textColor = NSColor.secondaryLabelColor;
+    self.cardEditButton = [NSButton buttonWithTitle:@"编辑付款卡…" target:self action:@selector(editCard:)];
+    self.cardEditButton.bordered = NO;
+    self.cardEditButton.font = [NSFont systemFontOfSize:11];
+    self.cardEditButton.contentTintColor = NSColor.linkColor;
+    self.cardEditButton.toolTip = @"给这张卡起名、记录有效期；快到期时会提醒换卡";
+    [self.cardEditButton setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.cardHintRow = [NSStackView stackViewWithViews:@[self.cardHint, self.cardEditButton]];
+    self.cardHintRow.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.cardHintRow.alignment = NSLayoutAttributeLeading;
+    self.cardHintRow.spacing = 2;
+    [self.cardHint.widthAnchor constraintEqualToAnchor:self.cardHintRow.widthAnchor].active = YES;
     self.paymentsTable = [NSTableView new];
     self.paymentsTable.style = NSTableViewStylePlain;
     self.paymentsTable.usesAlternatingRowBackgroundColors = YES;
@@ -545,7 +560,7 @@ static NSString *SourceName(NSString *source, id value) {
         [self sectionWithID:@"payment" title:@"付款" views:@[
             [self fieldWithCaption:@"供应商" control:self.supplierBox],
             [self fieldWithCaption:@"付款方式" control:self.methodBox],
-            [self fieldWithCaption:@"付款来源（卡尾号）" control:self.cardField], self.cardHint,
+            [self fieldWithCaption:@"付款来源（卡尾号）" control:self.cardField], self.cardHintRow,
             [self fieldWithCaption:@"付款记录" control:self.paymentsScroll], self.paymentsSummary, addPayment]],
         [self sectionWithID:@"network" title:@"网络" views:@[
             [self fieldWithCaption:@"代理" control:self.proxyField], proxyButtons, self.proxyResult, proxyHint]],
@@ -573,7 +588,7 @@ static NSString *SourceName(NSString *source, id value) {
     [usageBody setCustomSpacing:8 afterView:self.shortRow];
     [usageBody setCustomSpacing:4 afterView:self.trendCaption];
     [self.sectionBodies[@"subscription"] setCustomSpacing:4 afterView:self.dateToggle];
-    [self.sectionBodies[@"payment"] setCustomSpacing:2 afterView:self.cardHint];
+    [self.sectionBodies[@"payment"] setCustomSpacing:2 afterView:self.cardHintRow];
     [self.sectionBodies[@"subscription"] setCustomSpacing:6 afterView:self.sourceLabel];
     [self.sectionBodies[@"auth"] setCustomSpacing:6 afterView:authButtons];
     [self.sectionBodies[@"network"] setCustomSpacing:4 afterView:proxyButtons];
@@ -819,10 +834,18 @@ static NSString *SourceName(NSString *source, id value) {
         self.methodBox.stringValue = account.paymentMethod;
     }
     if (![self isEditing:self.cardField]) self.cardField.stringValue = account.cardLast4;
+    PaymentCard *card = [store cardWithLast4:account.cardLast4];
     if (![self isEditing:self.cardField]) {
-        self.cardHint.stringValue = @"只保存卡号后 4 位";
-        self.cardHint.textColor = NSColor.tertiaryLabelColor;
+        AccountExpiryState expiry = [card expiryStateFromDate:NSDate.date];
+        // The digits are in the field above; the line adds what the card is and how long it lasts.
+        NSString *expiryText = [card expiryDescriptionFromDate:NSDate.date];
+        self.cardHint.stringValue = !card ? @"只保存卡号后 4 位"
+            : (card.name.length ? [NSString stringWithFormat:@"%@ · %@", card.name, expiryText] : expiryText);
+        self.cardHint.textColor = expiry == AccountExpiryStateExpiringSoon || expiry == AccountExpiryStateExpired
+            ? DeskColorForExpiry(expiry) : NSColor.tertiaryLabelColor;
     }
+    self.cardEditButton.hidden = account.cardLast4.length != 4;
+    self.cardEditButton.title = card ? @"编辑付款卡…" : @"命名这张卡…";
 
     self.paymentRows = account.payments;
     [self.paymentsTable reloadData];
@@ -971,6 +994,12 @@ static NSString *SourceName(NSString *source, id value) {
     if ([supplier isEqualToString:account.supplier] && [method isEqualToString:account.paymentMethod]) return;
     [account applyListedPrice];
     [self save];
+}
+
+- (void)editCard:(id)sender {
+    [self commitPendingEdits];
+    Account *account = [self account];
+    if (account.cardLast4.length == 4) PaymentCardEdit(self.view.window, self.coordinator.store, account.cardLast4);
 }
 
 - (void)cardEdited {

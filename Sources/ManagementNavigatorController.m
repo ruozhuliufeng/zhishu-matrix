@@ -2,6 +2,7 @@
 #import "Account.h"
 #import "DeskUI.h"
 #import "ManagementScope.h"
+#import "PaymentCardEditor.h"
 
 static NSString *const ScopeDefaultsKey = @"managementScope";
 
@@ -19,6 +20,7 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         case ManagementScopeIncomplete: return NSColor.systemBrownColor;
         case ManagementScopeAuthorizedApp: return NSColor.systemIndigoColor;
         case ManagementScopeArchived: return NSColor.secondaryLabelColor;
+        case ManagementScopeCard: return NSColor.systemIndigoColor;
         case ManagementScopeLifecycle:
             if ([scope.value isEqualToString:@"banned"]) return NSColor.systemRedColor;
             return scope.value.length ? NSColor.systemGrayColor : NSColor.systemGreenColor;
@@ -105,6 +107,8 @@ static NSColor *ScopeTint(ManagementScope *scope) {
     self.tableView.delegate = self;
     self.tableView.menu = [NSMenu new];
     self.tableView.menu.delegate = self;
+    self.tableView.target = self;
+    self.tableView.doubleAction = @selector(rowDoubleClicked:);
     NSScrollView *scroll = [NSScrollView new];
     scroll.documentView = self.tableView;
     scroll.hasVerticalScroller = YES;
@@ -176,6 +180,11 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         [rows addObject:@"供应商"];
         for (NSString *supplier in suppliers) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:supplier]];
         if (unsupplied) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeSupplier value:@""]];
+    }
+    NSArray<NSString *> *cards = store.cardNumbers;
+    if (cards.count) {
+        [rows addObject:@"付款卡"];
+        for (NSString *last4 in cards) [rows addObject:[ManagementScope scopeWithKind:ManagementScopeCard value:last4]];
     }
     if (visible.count) {
         [rows addObject:@"状态"];
@@ -264,13 +273,28 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         cell = [[ManagementScopeCell alloc] initWithFrame:NSZeroRect];
         cell.identifier = @"Scope";
     }
+    NSString *symbolName = scope.kind == ManagementScopeTag ? @"tag.fill" : scope.symbol;
+    NSColor *tint = ScopeTint(scope);
+    NSString *title = scope.title;
+    cell.toolTip = nil;
+    if (scope.kind == ManagementScopeCard) {
+        // Cards show their saved name, and turn into a warning as they run out.
+        PaymentCard *card = [self.coordinator.store cardWithLast4:scope.value];
+        title = PaymentCardTitle(card, scope.value);
+        AccountExpiryState expiry = [card expiryStateFromDate:NSDate.date];
+        if (expiry == AccountExpiryStateExpiringSoon || expiry == AccountExpiryStateExpired) {
+            symbolName = @"creditcard.trianglebadge.exclamationmark";
+            tint = expiry == AccountExpiryStateExpired ? NSColor.systemRedColor : NSColor.systemOrangeColor;
+        }
+        cell.toolTip = [NSString stringWithFormat:@"%@\n%@%@\n双击或右键编辑名称和有效期", title, [card expiryDescriptionFromDate:NSDate.date] ?: @"未设置有效期",
+            card.note.length ? [@" · " stringByAppendingString:card.note] : @""];
+    }
     // Source lists restyle template images, so the color is baked into the symbol.
-    NSImage *symbol = [NSImage imageWithSystemSymbolName:scope.kind == ManagementScopeTag ? @"tag.fill" : scope.symbol
-        accessibilityDescription:nil];
+    NSImage *symbol = [NSImage imageWithSystemSymbolName:symbolName accessibilityDescription:nil];
     cell.imageView.image = [symbol imageWithSymbolConfiguration:[[NSImageSymbolConfiguration configurationWithPointSize:13
         weight:NSFontWeightRegular] configurationByApplyingConfiguration:[NSImageSymbolConfiguration
-        configurationWithPaletteColors:@[ScopeTint(scope)]]]];
-    cell.textField.stringValue = scope.title;
+        configurationWithPaletteColors:@[tint]]]];
+    cell.textField.stringValue = title;
     NSUInteger count = self.counts[scope].unsignedIntegerValue;
     cell.countLabel.stringValue = count || scope.kind == ManagementScopeAll ? [NSString stringWithFormat:@"%lu", (unsigned long)count] : @"";
     BOOL alarming = count && (scope.kind == ManagementScopeQuotaLow || scope.kind == ManagementScopeExpiring ||
@@ -292,6 +316,12 @@ static NSColor *ScopeTint(ManagementScope *scope) {
 - (void)menuNeedsUpdate:(NSMenu *)menu {
     [menu removeAllItems];
     ManagementScope *scope = [self scopeAtRow:self.tableView.clickedRow];
+    if (scope.kind == ManagementScopeCard) {
+        NSMenuItem *edit = [menu addItemWithTitle:@"编辑付款卡…" action:@selector(editCard:) keyEquivalent:@""];
+        edit.target = self;
+        edit.representedObject = scope.value;
+        return;
+    }
     // Lifecycle rows are fixed states, set per account in the details.
     if (!scope.value.length || scope.kind == ManagementScopeLifecycle) return;
     NSString *noun = scope.kind == ManagementScopeTag ? @"标签" : (scope.kind == ManagementScopeSupplier ? @"供应商"
@@ -306,6 +336,15 @@ static NSColor *ScopeTint(ManagementScope *scope) {
         item.target = self;
         item.representedObject = scope;
     }
+}
+
+- (void)editCard:(NSMenuItem *)sender {
+    PaymentCardEdit(self.view.window, self.coordinator.store, sender.representedObject);
+}
+
+- (void)rowDoubleClicked:(id)sender {
+    ManagementScope *scope = [self scopeAtRow:self.tableView.clickedRow];
+    if (scope.kind == ManagementScopeCard) PaymentCardEdit(self.view.window, self.coordinator.store, scope.value);
 }
 
 - (void)renameScope:(NSMenuItem *)sender {

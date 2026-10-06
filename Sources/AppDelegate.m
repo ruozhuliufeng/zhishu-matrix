@@ -83,6 +83,7 @@
     self.alerts.openAccount = ^(NSString *identifier) { [weakSelf openAccountID:identifier]; };
     self.alerts.recordPayment = ^(NSString *identifier, NSString *date) { [weakSelf recordPaymentForAccountID:identifier date:date]; };
     self.alerts.openExpenses = ^{ [weakSelf openExpenseReport]; };
+    self.alerts.openCard = ^(NSString *last4) { [weakSelf openCardLast4:last4]; };
     self.statusItem.recordPayment = ^(NSString *identifier, NSString *date) { [weakSelf recordPaymentForAccountID:identifier date:date]; };
     self.lock.lockStateChanged = ^(BOOL locked) { [weakSelf lockStateChanged:locked]; };
 
@@ -147,6 +148,15 @@
     }
     [self showMainWindow];
     [self.windowController openAccountID:identifier];
+}
+
+- (void)openCardLast4:(NSString *)last4 {
+    if (self.lock.isLocked) {
+        [self.lock showLockScreen];
+        return;
+    }
+    [self showMainWindow];
+    [self.windowController showCardLast4:last4];
 }
 
 - (void)openExpenseReport {

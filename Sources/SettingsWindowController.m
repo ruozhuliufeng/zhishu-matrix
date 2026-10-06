@@ -333,7 +333,7 @@ static NSString *BackupTime(NSDate *date) {
         DeskSeparator(), Title(@"通知")] mutableCopy];
     NSArray *toggles = @[
         @[[NSString stringWithFormat:@"额度告急与恢复（5 小时或每周额度低于 %.0f%%）", AccountLowQuotaPercent], NotifyQuotaDefaultsKey],
-        @[@"续费与到期提醒（不自动续费的提前 3 天和前一天，自动续费的前一天）", NotifyRenewalDefaultsKey],
+        @[@"续费与到期提醒（不自动续费的提前 3 天和前一天，自动续费的前一天；付款卡到期前 30 天和到期后）", NotifyRenewalDefaultsKey],
         @[@"登录失效（曾经登录的账号被退出时）", NotifySignedOutDefaultsKey],
         @[@"本月支出超出预算（在“费用”中设置每月预算后生效）", NotifyBudgetDefaultsKey]];
     for (NSArray *toggle in toggles) {

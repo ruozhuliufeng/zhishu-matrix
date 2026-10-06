@@ -18,6 +18,7 @@ typedef NS_ENUM(NSInteger, ManagementScopeKind) {
     ManagementScopeAuthorizedApp, // value: third-party app name with an active authorization
     ManagementScopeArchived,     // the only scope that lists archived accounts
     ManagementScopeLifecycle,    // value: lifecycle ("" = 使用中, see AccountLifecycles())
+    ManagementScopeCard,         // value: last four digits of the paying card
 };
 
 /// One entry of the management sidebar: a smart list, a group or a tag.

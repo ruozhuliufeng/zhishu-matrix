@@ -40,12 +40,13 @@ static NSDateFormatter *NameFormatter(void) {
     return formatter;
 }
 
-/// The account list of an export payload, ignoring when it was exported.
+/// The accounts and card details of an export payload, ignoring when it was exported.
 static NSData *AccountsFingerprint(NSData *payload) {
     NSDictionary *json = payload ? [NSJSONSerialization JSONObjectWithData:payload options:0 error:nil] : nil;
     id accounts = [json isKindOfClass:NSDictionary.class] ? json[@"accounts"] : nil;
     if (![accounts isKindOfClass:NSArray.class]) return nil;
-    return [NSJSONSerialization dataWithJSONObject:accounts options:NSJSONWritingSortedKeys error:nil];
+    return [NSJSONSerialization dataWithJSONObject:@{@"accounts": accounts, @"cards": json[@"cards"] ?: @[]}
+        options:NSJSONWritingSortedKeys error:nil];
 }
 
 @implementation BackupManager {

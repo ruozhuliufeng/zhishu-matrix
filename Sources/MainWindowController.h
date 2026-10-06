@@ -47,6 +47,8 @@ extern NSString *const LaunchViewDefaultsKey;
 - (IBAction)recordPaymentForSelected:(nullable id)sender;
 /// Archives the target accounts, or brings them back when all of them are archived.
 - (IBAction)toggleArchiveForSelected:(nullable id)sender;
+/// Opens the list of accounts paying with this card.
+- (void)showCardLast4:(NSString *)last4;
 /// Opens the expense report of every account.
 - (IBAction)showExpenseReport:(nullable id)sender;
 /// Diagnoses the network through the selected account's proxy, or the default proxy without a selection.
