@@ -164,8 +164,9 @@ NSString *DeskDateTimeString(NSDate *date) {
 }
 - (void)setFillColor:(NSColor *)fillColor { _fillColor = fillColor; [self setNeedsDisplay:YES]; }
 - (void)drawRect:(NSRect)dirtyRect {
+    // Since macOS 14 views don't clip to their bounds by default, so the dirty rect can reach into siblings.
     [self.fillColor setFill];
-    NSRectFill(dirtyRect);
+    NSRectFill(NSIntersectionRect(dirtyRect, self.bounds));
 }
 @end
 
